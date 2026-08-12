@@ -1,0 +1,59 @@
+# LiteLLM-style model routing
+# Upstream keys come from env vars — never commit real secrets.
+
+general_settings:
+  # Clients call this service with: Authorization: Bearer <master_key>
+  master_key_env: LITELLM_MASTER_KEY
+
+litellm_settings:
+  drop_params: true
+  request_timeout_ms: 300000
+
+model_list:
+  # ---- SpaceXAI / xAI (OpenAI-compatible) ----
+  - model_name: grok-4.5
+    litellm_params:
+      model: grok-4.5
+      api_base: https://api.x.ai/v1
+      api_key_env: XAI_API_KEY
+
+  - model_name: grok-3
+    litellm_params:
+      model: grok-3
+      api_base: https://api.x.ai/v1
+      api_key_env: XAI_API_KEY
+
+  # ---- OpenAI ----
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: gpt-4o-mini
+      api_base: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+
+  - model_name: gpt-4o
+    litellm_params:
+      model: gpt-4o
+      api_base: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+
+  # ---- Anthropic Messages API ----
+  - model_name: claude-sonnet
+    litellm_params:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+      api_base: https://api.anthropic.com
+      api_key_env: ANTHROPIC_API_KEY
+
+  # ---- Google Gemini (OpenAI-compatible endpoint) ----
+  - model_name: gemini-flash
+    litellm_params:
+      model: gemini-2.0-flash
+      api_base: https://generativelanguage.googleapis.com/v1beta/openai
+      api_key_env: GEMINI_API_KEY
+
+  # Default alias
+  - model_name: default
+    litellm_params:
+      model: grok-4.5
+      api_base: https://api.x.ai/v1
+      api_key_env: XAI_API_KEY

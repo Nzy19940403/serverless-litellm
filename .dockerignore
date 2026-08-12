@@ -1,0 +1,8 @@
+target
+.git
+.env
+.env.*
+*.md
+.github
+scripts
+**/*.rs.bk
