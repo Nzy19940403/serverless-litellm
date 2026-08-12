@@ -166,7 +166,8 @@ impl AppConfig {
                 .trim_end_matches('/')
                 .to_string();
 
-            if api_base.is_empty() && !matches!(provider, ProviderKind::VertexAnthropic) {
+            // Vertex Gemini / Anthropic build URL from project+location (no api_base)
+            if api_base.is_empty() && !provider.uses_gcp_adc() {
                 bail!("model {} missing api_base", entry.model_name);
             }
 
