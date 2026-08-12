@@ -37,6 +37,8 @@ pub enum ProviderKind {
     Anthropic,
     /// Claude via Vertex AI Model Garden (GCP billing / IAM)
     VertexAnthropic,
+    /// Gemini via Vertex AI generateContent (GCP billing / free-trial credits)
+    VertexGemini,
 }
 
 impl ProviderKind {
@@ -46,12 +48,15 @@ impl ProviderKind {
             Some("vertex_anthropic") | Some("vertex-anthropic") | Some("vertex") => {
                 Self::VertexAnthropic
             }
+            Some("vertex_gemini") | Some("vertex-gemini") | Some("gemini_vertex") => {
+                Self::VertexGemini
+            }
             _ => Self::OpenAiCompatible,
         }
     }
 
     pub fn uses_gcp_adc(self) -> bool {
-        matches!(self, Self::VertexAnthropic)
+        matches!(self, Self::VertexAnthropic | Self::VertexGemini)
     }
 }
 
@@ -234,7 +239,8 @@ fn resolve_vertex_location(p: &RawParams) -> String {
     env::var("GCP_LOCATION")
         .or_else(|_| env::var("VERTEX_LOCATION"))
         .or_else(|_| env::var("GOOGLE_CLOUD_REGION"))
-        .unwrap_or_else(|_| "us-east5".into())
+        // global works for many Gemini models; set us-east5 for Vertex Claude if needed
+        .unwrap_or_else(|_| "global".into())
 }
 
 pub fn port() -> u16 {

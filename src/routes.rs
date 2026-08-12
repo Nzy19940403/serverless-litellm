@@ -1,7 +1,8 @@
 use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::providers::{
-    anthropic_to_openai_sse_body, dispatch, pipe_sse_body, http_client, UpstreamResponse,
+    anthropic_to_openai_sse_body, dispatch, http_client, pipe_sse_body,
+    vertex_gemini_to_openai_sse_body, StreamMap, UpstreamResponse,
 };
 use axum::extract::State;
 use axum::http::{header, StatusCode};
@@ -101,10 +102,14 @@ pub async fn chat_completions(
             .stream
             .ok_or_else(|| AppError::Internal("empty upstream stream".into()))?;
 
-        let body = if upstream.is_anthropic {
-            anthropic_to_openai_sse_body(res, upstream.request_model)
-        } else {
-            pipe_sse_body(res)
+        let body = match upstream.stream_map {
+            StreamMap::Anthropic => {
+                anthropic_to_openai_sse_body(res, upstream.request_model)
+            }
+            StreamMap::VertexGemini => {
+                vertex_gemini_to_openai_sse_body(res, upstream.request_model)
+            }
+            StreamMap::Passthrough => pipe_sse_body(res),
         };
 
         return Ok(Response::builder()

@@ -40,10 +40,20 @@ fn strip_dropped(mut body: Value, drop_params: bool) -> Value {
     body
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamMap {
+    /// Already OpenAI SSE (or pipe raw)
+    Passthrough,
+    /// Anthropic SSE → OpenAI chunks
+    Anthropic,
+    /// Vertex Gemini streamGenerateContent → OpenAI chunks
+    VertexGemini,
+}
+
 pub struct UpstreamResponse {
     pub status: reqwest::StatusCode,
     pub is_stream: bool,
-    pub is_anthropic: bool,
+    pub stream_map: StreamMap,
     pub request_model: String,
     pub json: Option<Value>,
     pub error_json: Option<Value>,
@@ -93,6 +103,9 @@ pub async fn dispatch(
         }
         ProviderKind::VertexAnthropic => {
             call_vertex_anthropic(client, route, body, stream, request_model).await
+        }
+        ProviderKind::VertexGemini => {
+            call_vertex_gemini(client, route, body, stream, request_model).await
         }
     }
 }
@@ -239,7 +252,7 @@ async fn call_vertex_anthropic(
         return Ok(UpstreamResponse {
             status,
             is_stream: false,
-            is_anthropic: true,
+            stream_map: StreamMap::Anthropic,
             request_model,
             json: None,
             error_json: Some(err),
@@ -251,7 +264,7 @@ async fn call_vertex_anthropic(
         return Ok(UpstreamResponse {
             status,
             is_stream: true,
-            is_anthropic: true,
+            stream_map: StreamMap::Anthropic,
             request_model,
             json: None,
             error_json: None,
@@ -264,12 +277,330 @@ async fn call_vertex_anthropic(
     Ok(UpstreamResponse {
         status,
         is_stream: false,
-        is_anthropic: true,
+        stream_map: StreamMap::Anthropic,
         request_model,
         json: Some(openai),
         error_json: None,
         stream: None,
     })
+}
+
+fn vertex_gemini_url(project: &str, location: &str, model: &str, stream: bool) -> String {
+    let action = if stream {
+        "streamGenerateContent"
+    } else {
+        "generateContent"
+    };
+    let model_enc = urlencoding_minimal(model);
+    // stream needs alt=sse for true SSE; without it Vertex returns JSON array chunks
+    let query = if stream { "?alt=sse" } else { "" };
+    if location.eq_ignore_ascii_case("global") {
+        format!(
+            "https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/publishers/google/models/{model_enc}:{action}{query}"
+        )
+    } else {
+        format!(
+            "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{model_enc}:{action}{query}"
+        )
+    }
+}
+
+/// OpenAI chat body → Vertex Gemini generateContent body
+fn to_vertex_gemini_body(body: &Value) -> Value {
+    let messages = body
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut system_parts: Vec<Value> = Vec::new();
+    let mut contents: Vec<Value> = Vec::new();
+
+    for m in messages {
+        let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+        let text = content_to_text(m.get("content"));
+        if role == "system" {
+            if !text.is_empty() {
+                system_parts.push(json!({"text": text}));
+            }
+            continue;
+        }
+        let g_role = if role == "assistant" { "model" } else { "user" };
+        contents.push(json!({
+            "role": g_role,
+            "parts": [{"text": text}]
+        }));
+    }
+
+    if contents.is_empty() {
+        contents.push(json!({
+            "role": "user",
+            "parts": [{"text": "Hello"}]
+        }));
+    }
+
+    let mut out = json!({ "contents": contents });
+    let obj = out.as_object_mut().unwrap();
+
+    if !system_parts.is_empty() {
+        obj.insert(
+            "systemInstruction".into(),
+            json!({ "parts": system_parts }),
+        );
+    }
+
+    let mut generation = serde_json::Map::new();
+    if let Some(t) = body.get("temperature") {
+        generation.insert("temperature".into(), t.clone());
+    }
+    if let Some(t) = body.get("top_p") {
+        generation.insert("topP".into(), t.clone());
+    }
+    if let Some(mt) = body
+        .get("max_tokens")
+        .or_else(|| body.get("max_completion_tokens"))
+    {
+        generation.insert("maxOutputTokens".into(), mt.clone());
+    }
+    if let Some(s) = body.get("stop") {
+        let stops = if let Some(arr) = s.as_array() {
+            arr.clone()
+        } else {
+            vec![s.clone()]
+        };
+        generation.insert("stopSequences".into(), json!(stops));
+    }
+    if !generation.is_empty() {
+        obj.insert("generationConfig".into(), Value::Object(generation));
+    }
+
+    out
+}
+
+fn map_gemini_finish(reason: Option<&str>) -> &'static str {
+    match reason {
+        Some("MAX_TOKENS") | Some("max_tokens") => "length",
+        Some("STOP") | Some("stop") | None => "stop",
+        Some("SAFETY") => "content_filter",
+        _ => "stop",
+    }
+}
+
+fn vertex_gemini_to_openai(data: &Value, request_model: &str) -> Value {
+    let text = data
+        .pointer("/candidates/0/content/parts")
+        .and_then(|p| p.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
+
+    let finish = data
+        .pointer("/candidates/0/finishReason")
+        .and_then(|r| r.as_str());
+
+    let prompt = data
+        .pointer("/usageMetadata/promptTokenCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let completion = data
+        .pointer("/usageMetadata/candidatesTokenCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let total = data
+        .pointer("/usageMetadata/totalTokenCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(prompt + completion);
+
+    json!({
+        "id": format!("chatcmpl_{}", chrono::Utc::now().timestamp_millis()),
+        "object": "chat.completion",
+        "created": chrono::Utc::now().timestamp(),
+        "model": request_model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": map_gemini_finish(finish),
+        }],
+        "usage": {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": total,
+        }
+    })
+}
+
+async fn call_vertex_gemini(
+    client: &Client,
+    route: &ModelRoute,
+    body: Value,
+    stream: bool,
+    request_model: String,
+) -> Result<UpstreamResponse, AppError> {
+    let token = gcp_access_token(client, route).await?;
+    let project = resolve_gcp_project(client, route).await?;
+    // Gemini global endpoint is common; fall back to us-central1 if empty
+    let location = if route.vertex_location.is_empty() {
+        "global".to_string()
+    } else {
+        route.vertex_location.clone()
+    };
+
+    let url = vertex_gemini_url(&project, &location, &route.upstream_model, stream);
+    let payload = to_vertex_gemini_body(&body);
+
+    tracing::info!(%url, %project, %location, model = %route.upstream_model, "vertex gemini request");
+
+    let res = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await?;
+
+    let status = res.status();
+    if !status.is_success() {
+        let err = parse_error_body(res).await;
+        return Ok(UpstreamResponse {
+            status,
+            is_stream: false,
+            stream_map: StreamMap::Passthrough,
+            request_model,
+            json: None,
+            error_json: Some(err),
+            stream: None,
+        });
+    }
+
+    if stream {
+        return Ok(UpstreamResponse {
+            status,
+            is_stream: true,
+            stream_map: StreamMap::VertexGemini,
+            request_model,
+            json: None,
+            error_json: None,
+            stream: Some(res),
+        });
+    }
+
+    let data: Value = res.json().await?;
+    let openai = vertex_gemini_to_openai(&data, &request_model);
+    Ok(UpstreamResponse {
+        status,
+        is_stream: false,
+        stream_map: StreamMap::VertexGemini,
+        request_model,
+        json: Some(openai),
+        error_json: None,
+        stream: None,
+    })
+}
+
+/// Vertex Gemini SSE → OpenAI chat.completion.chunk SSE
+pub fn vertex_gemini_to_openai_sse_body(
+    res: reqwest::Response,
+    request_model: String,
+) -> Body {
+    let id = format!("chatcmpl_{}", chrono::Utc::now().timestamp_millis());
+    let mut byte_stream = res.bytes_stream();
+    let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(32);
+
+    tokio::spawn(async move {
+        let mut buffer = String::new();
+        let mut sent_role = false;
+        while let Some(item) = byte_stream.next().await {
+            match item {
+                Ok(chunk) => {
+                    buffer.push_str(&String::from_utf8_lossy(&chunk));
+                    while let Some(pos) = buffer.find('\n') {
+                        let line = buffer[..pos].trim_end_matches('\r').to_string();
+                        buffer.drain(..=pos);
+                        if let Some(data) = line.strip_prefix("data:") {
+                            let data = data.trim();
+                            if data.is_empty() || data == "[DONE]" {
+                                continue;
+                            }
+                            if let Ok(evt) = serde_json::from_str::<Value>(data) {
+                                let piece = evt
+                                    .pointer("/candidates/0/content/parts")
+                                    .and_then(|p| p.as_array())
+                                    .map(|parts| {
+                                        parts
+                                            .iter()
+                                            .filter_map(|p| {
+                                                p.get("text").and_then(|t| t.as_str())
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join("")
+                                    })
+                                    .unwrap_or_default();
+
+                                let finish = evt
+                                    .pointer("/candidates/0/finishReason")
+                                    .and_then(|r| r.as_str())
+                                    .map(|r| map_gemini_finish(Some(r)));
+
+                                if !sent_role {
+                                    sent_role = true;
+                                    let chunk = json!({
+                                        "id": id,
+                                        "object": "chat.completion.chunk",
+                                        "created": chrono::Utc::now().timestamp(),
+                                        "model": request_model,
+                                        "choices": [{
+                                            "index": 0,
+                                            "delta": {"role": "assistant", "content": ""},
+                                            "finish_reason": null
+                                        }]
+                                    });
+                                    let line = format!("data: {chunk}\n\n");
+                                    if tx.send(Ok(Bytes::from(line))).await.is_err() {
+                                        return;
+                                    }
+                                }
+
+                                if !piece.is_empty() || finish.is_some() {
+                                    let chunk = json!({
+                                        "id": id,
+                                        "object": "chat.completion.chunk",
+                                        "created": chrono::Utc::now().timestamp(),
+                                        "model": request_model,
+                                        "choices": [{
+                                            "index": 0,
+                                            "delta": {"content": piece},
+                                            "finish_reason": finish
+                                        }]
+                                    });
+                                    let line = format!("data: {chunk}\n\n");
+                                    if tx.send(Ok(Bytes::from(line))).await.is_err() {
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(std::io::Error::other(e.to_string()))).await;
+                    return;
+                }
+            }
+        }
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"data: [DONE]\n\n")))
+            .await;
+    });
+
+    let stream = futures_util::stream::unfold(rx, |mut rx| async {
+        rx.recv().await.map(|item| (item, rx))
+    });
+    Body::from_stream(stream)
 }
 
 async fn call_openai_compatible(
@@ -294,7 +625,7 @@ async fn call_openai_compatible(
         return Ok(UpstreamResponse {
             status,
             is_stream: false,
-            is_anthropic: false,
+            stream_map: StreamMap::Passthrough,
             request_model,
             json: None,
             error_json: Some(err),
@@ -306,7 +637,7 @@ async fn call_openai_compatible(
         return Ok(UpstreamResponse {
             status,
             is_stream: true,
-            is_anthropic: false,
+            stream_map: StreamMap::Passthrough,
             request_model,
             json: None,
             error_json: None,
@@ -323,7 +654,7 @@ async fn call_openai_compatible(
     Ok(UpstreamResponse {
         status,
         is_stream: false,
-        is_anthropic: false,
+        stream_map: StreamMap::Passthrough,
         request_model,
         json: Some(json),
         error_json: None,
@@ -355,7 +686,7 @@ async fn call_anthropic(
         return Ok(UpstreamResponse {
             status,
             is_stream: false,
-            is_anthropic: true,
+            stream_map: StreamMap::Anthropic,
             request_model,
             json: None,
             error_json: Some(err),
@@ -367,7 +698,7 @@ async fn call_anthropic(
         return Ok(UpstreamResponse {
             status,
             is_stream: true,
-            is_anthropic: true,
+            stream_map: StreamMap::Anthropic,
             request_model,
             json: None,
             error_json: None,
@@ -380,7 +711,7 @@ async fn call_anthropic(
     Ok(UpstreamResponse {
         status,
         is_stream: false,
-        is_anthropic: true,
+        stream_map: StreamMap::Anthropic,
         request_model,
         json: Some(openai),
         error_json: None,

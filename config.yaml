@@ -1,5 +1,5 @@
-# LiteLLM-style model routing
-# Upstream keys / GCP ADC come from env vars — never commit real secrets.
+# LiteLLM-style model routing for Cloud Run
+# Vertex providers use GCP ADC (Cloud Run SA) — bills to your GCP free-trial credits.
 
 general_settings:
   master_key_env: LITELLM_MASTER_KEY
@@ -9,26 +9,58 @@ litellm_settings:
   request_timeout_ms: 300000
 
 model_list:
-  # ---- Claude on Vertex AI (GCP billing, scheme B) ----
-  # Enable model in Model Garden first. Common regions: us-east5, europe-west1, global
+  # =====================================================================
+  # Vertex Gemini — USE THESE to spend GCP free-trial / billing credits
+  # Env: GCP_PROJECT, GCP_LOCATION (recommend: global), LITELLM_MASTER_KEY
+  # Cloud Run SA needs roles/aiplatform.user ; enable aiplatform.googleapis.com
+  # =====================================================================
+  - model_name: gemini-3.6-flash
+    litellm_params:
+      provider: vertex_gemini
+      model: gemini-3.6-flash
+
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      provider: vertex_gemini
+      model: gemini-3.5-flash
+
+  - model_name: gemini-3.1-flash-lite
+    litellm_params:
+      provider: vertex_gemini
+      model: gemini-3.1-flash-lite-preview
+
+  - model_name: gemini-2.5-flash
+    litellm_params:
+      provider: vertex_gemini
+      model: gemini-2.5-flash
+
+  # Short alias / default → Vertex 3.6 Flash (GCP billing)
+  - model_name: gemini-flash
+    litellm_params:
+      provider: vertex_gemini
+      model: gemini-3.6-flash
+
+  - model_name: default
+    litellm_params:
+      provider: vertex_gemini
+      model: gemini-3.6-flash
+
+  # =====================================================================
+  # AI Studio Key path (optional) — may use free quota; NOT guaranteed GCP credits
+  # Needs GEMINI_API_KEY
+  # =====================================================================
+  - model_name: gemini-3.6-flash-studio
+    litellm_params:
+      model: gemini-3.6-flash
+      api_base: https://generativelanguage.googleapis.com/v1beta/openai
+      api_key_env: GEMINI_API_KEY
+
+  # ---- Claude on Vertex (needs Model Garden approval + often paid billing account) ----
   - model_name: claude-sonnet
     litellm_params:
       provider: vertex_anthropic
       model: claude-sonnet-4@20250514
-      # project/location from env GCP_PROJECT + GCP_LOCATION (default us-east5)
-      # optional override token: VERTEX_ACCESS_TOKEN (local dev)
 
-  - model_name: claude-haiku
-    litellm_params:
-      provider: vertex_anthropic
-      model: claude-3-5-haiku@20241022
-
-  - model_name: claude-opus
-    litellm_params:
-      provider: vertex_anthropic
-      model: claude-opus-4@20250514
-
-  # ---- Anthropic direct (optional, needs ANTHROPIC_API_KEY) ----
   - model_name: claude-sonnet-direct
     litellm_params:
       provider: anthropic
@@ -36,49 +68,15 @@ model_list:
       api_base: https://api.anthropic.com
       api_key_env: ANTHROPIC_API_KEY
 
-  # ---- SpaceXAI / xAI ----
+  # ---- Optional other providers ----
   - model_name: grok-4.5
     litellm_params:
       model: grok-4.5
       api_base: https://api.x.ai/v1
       api_key_env: XAI_API_KEY
 
-  - model_name: grok-3
-    litellm_params:
-      model: grok-3
-      api_base: https://api.x.ai/v1
-      api_key_env: XAI_API_KEY
-
-  # ---- OpenAI ----
   - model_name: gpt-4o-mini
     litellm_params:
       model: gpt-4o-mini
       api_base: https://api.openai.com/v1
       api_key_env: OPENAI_API_KEY
-
-  # ---- Gemini (Google AI Studio OpenAI-compat; needs GEMINI_API_KEY) ----
-  # https://ai.google.dev/gemini-api/docs/models
-  - model_name: gemini-3.6-flash
-    litellm_params:
-      model: gemini-3.6-flash
-      api_base: https://generativelanguage.googleapis.com/v1beta/openai
-      api_key_env: GEMINI_API_KEY
-
-  - model_name: gemini-3.5-flash
-    litellm_params:
-      model: gemini-3.5-flash
-      api_base: https://generativelanguage.googleapis.com/v1beta/openai
-      api_key_env: GEMINI_API_KEY
-
-  # Short alias → current recommended Flash
-  - model_name: gemini-flash
-    litellm_params:
-      model: gemini-3.6-flash
-      api_base: https://generativelanguage.googleapis.com/v1beta/openai
-      api_key_env: GEMINI_API_KEY
-
-  - model_name: default
-    litellm_params:
-      model: gemini-3.6-flash
-      api_base: https://generativelanguage.googleapis.com/v1beta/openai
-      api_key_env: GEMINI_API_KEY
