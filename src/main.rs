@@ -14,7 +14,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::auth::master_key_auth;
 use crate::config::{port, AppConfig};
-use crate::routes::{chat_completions, health, healthz, list_models, root, AppState};
+use crate::routes::{chat_completions, health, healthz, list_models, root, ui_index, AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -39,6 +39,8 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/", get(root))
+        .route("/ui", get(ui_index))
+        .route("/ui/", get(ui_index))
         .route("/health", get(health))
         .route("/healthz", get(healthz))
         .route("/v1/models", get(list_models))

@@ -33,8 +33,17 @@ pub async fn root(State(state): State<AppState>) -> Json<Value> {
         "service": "serverless-litellm",
         "runtime": "rust",
         "docs": "OpenAI-compatible: POST /v1/chat/completions, GET /v1/models",
+        "ui": "/ui/",
         "models": state.config.model_names,
     }))
+}
+
+/// Minimal browser test console (static HTML).
+pub async fn ui_index() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        include_str!("../static/index.html"),
+    )
 }
 
 pub async fn health() -> Json<Value> {

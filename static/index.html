@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>serverless-litellm 测试台</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4f;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #5b9fd4;
+      --accent2: #3d8b6e;
+      --danger: #d45b5b;
+      --user: #243044;
+      --bot: #1e2a24;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 600;
+    }
+    header .tag {
+      font-size: 0.75rem;
+      color: var(--muted);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+    main {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      height: calc(100vh - 56px);
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: flex-end;
+    }
+    label {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 0.75rem;
+      color: var(--muted);
+      flex: 1;
+      min-width: 140px;
+    }
+    input, select, textarea {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 0.9rem;
+      font-family: inherit;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    button {
+      background: var(--accent);
+      color: #0a0e14;
+      border: none;
+      border-radius: 8px;
+      padding: 9px 14px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.875rem;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    button.secondary {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    button.green { background: var(--accent2); color: #fff; }
+    #chat {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 8px 4px;
+      min-height: 200px;
+    }
+    .msg {
+      max-width: 92%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-size: 0.92rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg.user {
+      align-self: flex-end;
+      background: var(--user);
+      border: 1px solid var(--border);
+    }
+    .msg.assistant {
+      align-self: flex-start;
+      background: var(--bot);
+      border: 1px solid #2a3d32;
+    }
+    .msg.system {
+      align-self: center;
+      color: var(--muted);
+      font-size: 0.8rem;
+      background: transparent;
+      border: none;
+    }
+    .msg.error {
+      align-self: stretch;
+      background: #2a1818;
+      border: 1px solid var(--danger);
+      color: #f0b4b4;
+    }
+    .composer {
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+    }
+    .composer textarea {
+      flex: 1;
+      min-height: 44px;
+      max-height: 140px;
+      resize: vertical;
+    }
+    .meta {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>serverless-litellm</h1>
+    <span class="tag">本地 / Cloud Run 测试台</span>
+    <span class="tag" id="status">未连接</span>
+  </header>
+  <main>
+    <div class="panel">
+      <div class="row">
+        <label>
+          Base URL
+          <input id="baseUrl" placeholder="https://xxx.run.app 或留空=当前域名" />
+        </label>
+        <label>
+          Master Key
+          <input id="apiKey" type="password" placeholder="LITELLM_MASTER_KEY" />
+        </label>
+        <label style="flex: 0.8; min-width: 120px;">
+          模型
+          <select id="model"><option value="">先加载列表</option></select>
+        </label>
+        <button type="button" class="secondary" id="btnLoad">加载模型</button>
+      </div>
+      <div class="meta" id="hint">模型列表来自 GET /v1/models；聊天 POST /v1/chat/completions</div>
+    </div>
+
+    <div class="panel" style="flex:1; display:flex; flex-direction:column; min-height:0;">
+      <div id="chat"></div>
+      <div class="composer">
+        <textarea id="input" rows="2" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+        <button type="button" class="green" id="btnSend">发送</button>
+      </div>
+    </div>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const chat = $("chat");
+    const LS_KEY = "sll_test_ui_v1";
+
+    function loadSettings() {
+      try {
+        const s = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+        if (s.baseUrl != null) $("baseUrl").value = s.baseUrl;
+        if (s.apiKey != null) $("apiKey").value = s.apiKey;
+        if (s.model) $("model").dataset.pref = s.model;
+      } catch (_) {}
+      if (!$("baseUrl").value) {
+        $("baseUrl").value = location.origin === "null" || location.protocol === "file:"
+          ? "http://127.0.0.1:4000"
+          : location.origin;
+      }
+    }
+    function saveSettings() {
+      localStorage.setItem(LS_KEY, JSON.stringify({
+        baseUrl: $("baseUrl").value.trim(),
+        apiKey: $("apiKey").value,
+        model: $("model").value,
+      }));
+    }
+
+    function base() {
+      return ($("baseUrl").value || location.origin).replace(/\/$/, "");
+    }
+    function headers() {
+      const h = { "Content-Type": "application/json" };
+      const k = $("apiKey").value.trim();
+      if (k) h["Authorization"] = "Bearer " + k;
+      return h;
+    }
+
+    function addMsg(role, text, cls) {
+      const el = document.createElement("div");
+      el.className = "msg " + (cls || role);
+      el.textContent = text;
+      chat.appendChild(el);
+      chat.scrollTop = chat.scrollHeight;
+      return el;
+    }
+
+    async function loadModels() {
+      saveSettings();
+      $("status").textContent = "加载中…";
+      try {
+        const res = await fetch(base() + "/v1/models", { headers: headers() });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(body?.error?.message || res.status + " " + res.statusText);
+        }
+        const ids = (body.data || []).map((m) => m.id);
+        const sel = $("model");
+        const pref = sel.dataset.pref || sel.value;
+        sel.innerHTML = "";
+        if (!ids.length) {
+          sel.innerHTML = '<option value="">（无模型）</option>';
+        } else {
+          ids.forEach((id) => {
+            const o = document.createElement("option");
+            o.value = id;
+            o.textContent = id;
+            if (id === pref) o.selected = true;
+            sel.appendChild(o);
+          });
+          if (!sel.value) sel.selectedIndex = 0;
+        }
+        $("status").textContent = "已连接 · " + ids.length + " 模型";
+        $("hint").textContent = "可选: " + ids.join(", ");
+        addMsg("system", "已加载 " + ids.length + " 个模型", "system");
+      } catch (e) {
+        $("status").textContent = "加载失败";
+        addMsg("error", "加载模型失败: " + e.message, "error");
+      }
+    }
+
+    async function send() {
+      const text = $("input").value.trim();
+      const model = $("model").value;
+      if (!text) return;
+      if (!model) {
+        addMsg("error", "请先加载并选择模型", "error");
+        return;
+      }
+      saveSettings();
+      $("input").value = "";
+      addMsg("user", text);
+      const bubble = addMsg("assistant", "…");
+      $("btnSend").disabled = true;
+      try {
+        const res = await fetch(base() + "/v1/chat/completions", {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify({
+            model,
+            messages: [{ role: "user", content: text }],
+            temperature: 0.7,
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(body?.error?.message || JSON.stringify(body) || res.statusText);
+        }
+        const content =
+          body?.choices?.[0]?.message?.content ??
+          body?.choices?.[0]?.delta?.content ??
+          JSON.stringify(body, null, 2);
+        bubble.textContent = content;
+        bubble.className = "msg assistant";
+      } catch (e) {
+        bubble.textContent = "错误: " + e.message;
+        bubble.className = "msg error";
+      } finally {
+        $("btnSend").disabled = false;
+        chat.scrollTop = chat.scrollHeight;
+      }
+    }
+
+    $("btnLoad").onclick = loadModels;
+    $("btnSend").onclick = send;
+    $("input").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        send();
+      }
+    });
+    $("model").addEventListener("change", saveSettings);
+
+    loadSettings();
+    addMsg("system", "填写 Master Key 后点「加载模型」，再发消息测试。", "system");
+  </script>
+</body>
+</html>

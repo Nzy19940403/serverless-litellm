@@ -8,14 +8,16 @@ use crate::config::{is_prod, AppConfig};
 use crate::error::AppError;
 
 /// Master-key auth (same idea as LiteLLM).
-/// Public: `/`, `/health`, `/healthz`
+/// Public: `/`, `/health`, `/healthz`, `/ui` (test console assets)
 pub async fn master_key_auth(
     axum::extract::State(cfg): axum::extract::State<Arc<AppConfig>>,
     req: Request,
     next: Next,
 ) -> Result<Response, AppError> {
     let path = req.uri().path();
-    if matches!(path, "/" | "/health" | "/healthz") {
+    if matches!(path, "/" | "/health" | "/healthz" | "/ui" | "/ui/")
+        || path.starts_with("/ui/")
+    {
         return Ok(next.run(req).await);
     }
 

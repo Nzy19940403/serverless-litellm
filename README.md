@@ -18,8 +18,11 @@ OpenAI-compatible **multi-provider LLM gateway** for **Google Cloud Run**, in th
 | Method | Path | Auth |
 |--------|------|------|
 | `GET` | `/health` | public |
+| `GET` | `/ui/` | public — **browser test console** |
 | `GET` | `/v1/models` | Bearer master key |
 | `POST` | `/v1/chat/completions` | Bearer master key |
+
+Open `https://YOUR-SERVICE/ui/` → fill Master Key → load models → chat.
 
 Same shape as OpenAI Chat Completions — point any OpenAI SDK at this service.
 
