@@ -17,6 +17,8 @@ RUN mkdir src \
 
 COPY src ./src
 COPY config.yaml ./config.yaml
+# include_str! embeds static/index.html at compile time
+COPY static ./static
 RUN cargo build --release \
     && strip target/release/serverless-litellm || true
 
