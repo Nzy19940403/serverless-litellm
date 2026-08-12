@@ -79,6 +79,19 @@ cargo run --release
 
 ## Deploy to Cloud Run
 
+### Console (Git continuous deploy)
+
+1. Source: this GitHub repo, branch `main`
+2. Build type: **Dockerfile** (not Buildpacks)
+3. Dockerfile path: `Dockerfile` (repo root)
+4. Container port: **4000**
+5. Set env vars: `LITELLM_MASTER_KEY`, `XAI_API_KEY`, …
+
+First Rust image build often takes **5–15 minutes** (compiling dependencies).  
+If the build fails in ~20s with **no logs**, fix IAM (below) and rebuild.
+
+### CLI
+
 ```bash
 gcloud auth login
 gcloud config set project YOUR_PROJECT_ID
@@ -93,6 +106,26 @@ chmod +x scripts/deploy-cloud-run.sh
 Defaults: region `us-central1`, min instances `0` (serverless scale-to-zero), port `4000`, 512Mi RAM.
 
 **Production tip:** store keys in [Secret Manager](https://cloud.google.com/secret-manager) and mount with `--set-secrets` instead of plain env vars.
+
+### Build fails / “未找到日志”
+
+1. **Grant Cloud Build SA logging** (replace `PROJECT_NUMBER`):
+
+```bash
+PROJECT_NUMBER=$(gcloud projects describe "$(gcloud config get-value project)" --format='value(projectNumber)')
+gcloud projects add-iam-policy-binding "$(gcloud config get-value project)" \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/logging.logWriter"
+gcloud projects add-iam-policy-binding "$(gcloud config get-value project)" \
+  --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+  --role="roles/logging.logWriter"
+```
+
+2. Open **Cloud Build → History → that build → Build log** (not only Cloud Run page).
+
+3. Common causes we already mitigated in `Dockerfile`:
+   - Docker Hub rate limit → bases use `mirror.gcr.io/library/...`
+   - Missing `Cargo.lock` in build context → lockfile is copied explicitly
 
 ## Project layout
 

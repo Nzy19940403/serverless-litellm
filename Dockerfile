@@ -1,31 +1,43 @@
-# syntax=docker/dockerfile:1
-# Multi-stage: tiny Cloud Run image (~10-20MB compressed typical)
+# Cloud Run / Cloud Build friendly multi-stage image.
+# Use mirror.gcr.io to avoid Docker Hub rate limits from GCP builders.
 
-FROM rust:1.85-bookworm AS builder
+# ---------- build ----------
+FROM mirror.gcr.io/library/rust:1-bookworm AS builder
 WORKDIR /app
 
-# Cache dependencies
-COPY Cargo.toml ./
-RUN mkdir src && echo 'fn main(){}' > src/main.rs \
+# Dependency layer cache: only recompile crates when Cargo.* changes
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src \
+    && echo 'fn main() { println!("build stub"); }' > src/main.rs \
     && cargo build --release \
-    && rm -rf src
+    && rm -rf src \
+    && rm -f target/release/serverless-litellm \
+    && rm -f target/release/deps/serverless_litellm* \
+    && rm -rf target/release/.fingerprint/serverless-litellm*
 
 COPY src ./src
 COPY config.yaml ./config.yaml
-# Force rebuild of actual sources
-RUN touch src/main.rs && cargo build --release
+RUN cargo build --release \
+    && strip target/release/serverless-litellm || true
 
-# Runtime: distroless or debian slim
-FROM gcr.io/distroless/cc-debian12:nonroot
+# ---------- runtime ----------
+# debian-slim is more reliable on Cloud Run than distroless for first deploy/debug
+FROM mirror.gcr.io/library/debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -r -u 65532 -s /usr/sbin/nologin nonroot
+
 WORKDIR /app
-
 COPY --from=builder /app/target/release/serverless-litellm /app/serverless-litellm
 COPY --from=builder /app/config.yaml /app/config.yaml
 
-ENV CONFIG_PATH=/app/config.yaml
-ENV PORT=4000
-ENV RUST_LOG=serverless_litellm=info
+ENV CONFIG_PATH=/app/config.yaml \
+    PORT=4000 \
+    RUST_LOG=serverless_litellm=info \
+    RUST_BACKTRACE=1
 
 EXPOSE 4000
-USER nonroot:nonroot
-ENTRYPOINT ["/app/serverless-litellm"]
+USER nonroot
+CMD ["/app/serverless-litellm"]
