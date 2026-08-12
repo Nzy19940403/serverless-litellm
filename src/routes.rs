@@ -34,6 +34,10 @@ pub async fn root(State(state): State<AppState>) -> Json<Value> {
         "runtime": "rust",
         "docs": "OpenAI-compatible: POST /v1/chat/completions, GET /v1/models",
         "ui": "/ui/",
+        "auth": {
+            "modes": ["LITELLM_MASTER_KEY (Bearer/x-api-key)", "RS256 JWT (Bearer, JWT_PUBLIC_KEY)"],
+            "note": "Secrets via Cloud Run env/Secret Manager — not in git"
+        },
         "models": state.config.model_names,
     }))
 }

@@ -12,9 +12,10 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::auth::master_key_auth;
+use crate::auth::{gateway_auth, AuthState};
 use crate::config::{port, AppConfig};
 use crate::routes::{chat_completions, health, healthz, list_models, root, ui_index, AppState};
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -27,15 +28,16 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = AppConfig::load()?;
+    let auth = Arc::new(AuthState::from_env(config.master_key.clone())?);
     tracing::info!(
         config = %config.config_path.display(),
         models = ?config.model_names,
-        master_key_set = !config.master_key.is_empty(),
+        master_key_set = auth.master_key_set(),
+        jwt_rs256 = auth.jwt_enabled(),
         "loaded config"
     );
 
     let state = AppState::new(config);
-    let cfg_for_auth = state.config.clone();
 
     let app = Router::new()
         .route("/", get(root))
@@ -45,10 +47,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/healthz", get(healthz))
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
-        .layer(middleware::from_fn_with_state(
-            cfg_for_auth,
-            master_key_auth,
-        ))
+        .layer(middleware::from_fn_with_state(auth, gateway_auth))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);

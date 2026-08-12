@@ -182,8 +182,8 @@
           <input id="baseUrl" placeholder="https://xxx.run.app 或留空=当前域名" />
         </label>
         <label>
-          Master Key
-          <input id="apiKey" type="password" placeholder="LITELLM_MASTER_KEY" />
+          Master Key 或 JWT
+          <input id="apiKey" type="password" placeholder="LITELLM_MASTER_KEY 或 RS256 JWT" />
         </label>
         <label style="flex: 0.8; min-width: 120px;">
           模型
@@ -334,7 +334,7 @@
     $("model").addEventListener("change", saveSettings);
 
     loadSettings();
-    addMsg("system", "填写 Master Key 后点「加载模型」，再发消息测试。", "system");
+    addMsg("system", "填写 Master Key 或 mint 的 JWT 后点「加载模型」。Cloud Run 建议公开访问 + 密钥鉴权。", "system");
   </script>
 </body>
 </html>
