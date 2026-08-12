@@ -63,7 +63,10 @@ model_list:
 Supported `provider` values:
 
 - omit / default → **OpenAI-compatible** (`/chat/completions`) — xAI, OpenAI, Gemini OpenAI-compat, …
-- `anthropic` → Anthropic Messages API (mapped to OpenAI request/response)
+- `anthropic` → Anthropic Messages API (direct, needs `ANTHROPIC_API_KEY`)
+- `vertex_anthropic` → **Claude on Vertex AI** (GCP IAM / ADC; see [docs/vertex-claude.md](docs/vertex-claude.md))
+
+Default `claude-sonnet` uses **Vertex** (`claude-sonnet-4@20250514`).
 
 ## Local run
 

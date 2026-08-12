@@ -1,8 +1,7 @@
 # LiteLLM-style model routing
-# Upstream keys come from env vars — never commit real secrets.
+# Upstream keys / GCP ADC come from env vars — never commit real secrets.
 
 general_settings:
-  # Clients call this service with: Authorization: Bearer <master_key>
   master_key_env: LITELLM_MASTER_KEY
 
 litellm_settings:
@@ -10,7 +9,34 @@ litellm_settings:
   request_timeout_ms: 300000
 
 model_list:
-  # ---- SpaceXAI / xAI (OpenAI-compatible) ----
+  # ---- Claude on Vertex AI (GCP billing, scheme B) ----
+  # Enable model in Model Garden first. Common regions: us-east5, europe-west1, global
+  - model_name: claude-sonnet
+    litellm_params:
+      provider: vertex_anthropic
+      model: claude-sonnet-4@20250514
+      # project/location from env GCP_PROJECT + GCP_LOCATION (default us-east5)
+      # optional override token: VERTEX_ACCESS_TOKEN (local dev)
+
+  - model_name: claude-haiku
+    litellm_params:
+      provider: vertex_anthropic
+      model: claude-3-5-haiku@20241022
+
+  - model_name: claude-opus
+    litellm_params:
+      provider: vertex_anthropic
+      model: claude-opus-4@20250514
+
+  # ---- Anthropic direct (optional, needs ANTHROPIC_API_KEY) ----
+  - model_name: claude-sonnet-direct
+    litellm_params:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+      api_base: https://api.anthropic.com
+      api_key_env: ANTHROPIC_API_KEY
+
+  # ---- SpaceXAI / xAI ----
   - model_name: grok-4.5
     litellm_params:
       model: grok-4.5
@@ -30,30 +56,14 @@ model_list:
       api_base: https://api.openai.com/v1
       api_key_env: OPENAI_API_KEY
 
-  - model_name: gpt-4o
-    litellm_params:
-      model: gpt-4o
-      api_base: https://api.openai.com/v1
-      api_key_env: OPENAI_API_KEY
-
-  # ---- Anthropic Messages API ----
-  - model_name: claude-sonnet
-    litellm_params:
-      provider: anthropic
-      model: claude-sonnet-4-20250514
-      api_base: https://api.anthropic.com
-      api_key_env: ANTHROPIC_API_KEY
-
-  # ---- Google Gemini (OpenAI-compatible endpoint) ----
+  # ---- Gemini (Google AI Studio key, not Vertex) ----
   - model_name: gemini-flash
     litellm_params:
       model: gemini-2.0-flash
       api_base: https://generativelanguage.googleapis.com/v1beta/openai
       api_key_env: GEMINI_API_KEY
 
-  # Default alias
   - model_name: default
     litellm_params:
-      model: grok-4.5
-      api_base: https://api.x.ai/v1
-      api_key_env: XAI_API_KEY
+      provider: vertex_anthropic
+      model: claude-sonnet-4@20250514

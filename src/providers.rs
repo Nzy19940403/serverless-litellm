@@ -56,7 +56,8 @@ pub async fn dispatch(
     mut body: Value,
     drop_params: bool,
 ) -> Result<UpstreamResponse, AppError> {
-    if route.api_key.is_empty() {
+    // Vertex uses GCP ADC / metadata token — no static API key required
+    if route.api_key.is_empty() && !route.provider.uses_gcp_adc() {
         return Err(AppError::Internal(format!(
             "Missing API key for model \"{}\". Set env {}.",
             route.model_name,
@@ -90,7 +91,185 @@ pub async fn dispatch(
         ProviderKind::Anthropic => {
             call_anthropic(client, route, body, stream, request_model).await
         }
+        ProviderKind::VertexAnthropic => {
+            call_vertex_anthropic(client, route, body, stream, request_model).await
+        }
     }
+}
+
+/// Obtain OAuth access token for Vertex AI.
+/// Order: route.api_key / VERTEX_ACCESS_TOKEN / GOOGLE_OAUTH_ACCESS_TOKEN → GCE metadata.
+async fn gcp_access_token(client: &Client, route: &ModelRoute) -> Result<String, AppError> {
+    if !route.api_key.is_empty() {
+        return Ok(route.api_key.clone());
+    }
+    if let Ok(t) = std::env::var("VERTEX_ACCESS_TOKEN") {
+        if !t.is_empty() {
+            return Ok(t);
+        }
+    }
+    if let Ok(t) = std::env::var("GOOGLE_OAUTH_ACCESS_TOKEN") {
+        if !t.is_empty() {
+            return Ok(t);
+        }
+    }
+
+    // Cloud Run / GCE metadata server
+    let res = client
+        .get("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token")
+        .header("Metadata-Flavor", "Google")
+        .send()
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "Failed to fetch GCP access token from metadata (are you on Cloud Run?). \
+                 Locally set VERTEX_ACCESS_TOKEN=$(gcloud auth print-access-token). Error: {e}"
+            ))
+        })?;
+
+    if !res.status().is_success() {
+        let t = res.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "Metadata token endpoint failed: {t}"
+        )));
+    }
+
+    let v: Value = res.json().await.map_err(|e| AppError::Internal(e.to_string()))?;
+    v.get("access_token")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| AppError::Internal("metadata token response missing access_token".into()))
+}
+
+async fn resolve_gcp_project(client: &Client, route: &ModelRoute) -> Result<String, AppError> {
+    if !route.vertex_project.is_empty() {
+        return Ok(route.vertex_project.clone());
+    }
+    // Metadata project id on Cloud Run
+    let res = client
+        .get("http://metadata.google.internal/computeMetadata/v1/project/project-id")
+        .header("Metadata-Flavor", "Google")
+        .send()
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "GCP project not set. Set env GCP_PROJECT (or GOOGLE_CLOUD_PROJECT). Metadata error: {e}"
+            ))
+        })?;
+    if !res.status().is_success() {
+        return Err(AppError::Internal(
+            "GCP project not set. Set env GCP_PROJECT.".into(),
+        ));
+    }
+    let id = res.text().await.map_err(|e| AppError::Internal(e.to_string()))?;
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        return Err(AppError::Internal("empty project id from metadata".into()));
+    }
+    Ok(id)
+}
+
+fn vertex_anthropic_url(project: &str, location: &str, model: &str, stream: bool) -> String {
+    let action = if stream {
+        "streamRawPredict"
+    } else {
+        "rawPredict"
+    };
+    // URL-encode model id safely (contains @)
+    let model_enc = urlencoding_minimal(model);
+    if location.eq_ignore_ascii_case("global") {
+        format!(
+            "https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/publishers/anthropic/models/{model_enc}:{action}"
+        )
+    } else {
+        format!(
+            "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/anthropic/models/{model_enc}:{action}"
+        )
+    }
+}
+
+fn urlencoding_minimal(s: &str) -> String {
+    // model ids are like claude-sonnet-4@20250514 — encode @ only
+    s.replace('@', "%40")
+}
+
+fn to_vertex_anthropic_body(body: &Value) -> Value {
+    let mut payload = to_anthropic_body(body, "");
+    if let Some(obj) = payload.as_object_mut() {
+        obj.remove("model"); // model is in the URL on Vertex
+        obj.insert(
+            "anthropic_version".into(),
+            json!("vertex-2023-10-16"),
+        );
+    }
+    payload
+}
+
+async fn call_vertex_anthropic(
+    client: &Client,
+    route: &ModelRoute,
+    body: Value,
+    stream: bool,
+    request_model: String,
+) -> Result<UpstreamResponse, AppError> {
+    let token = gcp_access_token(client, route).await?;
+    let project = resolve_gcp_project(client, route).await?;
+    let location = if route.vertex_location.is_empty() {
+        "us-east5".to_string()
+    } else {
+        route.vertex_location.clone()
+    };
+
+    let url = vertex_anthropic_url(&project, &location, &route.upstream_model, stream);
+    let payload = to_vertex_anthropic_body(&body);
+
+    tracing::debug!(%url, %project, %location, model = %route.upstream_model, "vertex anthropic request");
+
+    let res = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await?;
+
+    let status = res.status();
+    if !status.is_success() {
+        let err = parse_error_body(res).await;
+        return Ok(UpstreamResponse {
+            status,
+            is_stream: false,
+            is_anthropic: true,
+            request_model,
+            json: None,
+            error_json: Some(err),
+            stream: None,
+        });
+    }
+
+    if stream {
+        return Ok(UpstreamResponse {
+            status,
+            is_stream: true,
+            is_anthropic: true,
+            request_model,
+            json: None,
+            error_json: None,
+            stream: Some(res),
+        });
+    }
+
+    let data: Value = res.json().await?;
+    let openai = anthropic_to_openai(&data, &request_model);
+    Ok(UpstreamResponse {
+        status,
+        is_stream: false,
+        is_anthropic: true,
+        request_model,
+        json: Some(openai),
+        error_json: None,
+        stream: None,
+    })
 }
 
 async fn call_openai_compatible(

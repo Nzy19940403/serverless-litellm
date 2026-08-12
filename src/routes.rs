@@ -77,7 +77,7 @@ pub async fn chat_completions(
         ))
     })?;
 
-    if route.api_key.is_empty() {
+    if route.api_key.is_empty() && !route.provider.uses_gcp_adc() {
         return Err(AppError::Internal(format!(
             "Upstream key missing for \"{model}\". Set env {}.",
             route.api_key_env

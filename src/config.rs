@@ -21,23 +21,37 @@ pub struct ModelRoute {
     pub model_name: String,
     pub provider: ProviderKind,
     pub upstream_model: String,
+    /// OpenAI-compat / Anthropic base, or prebuilt Vertex base (optional for vertex)
     pub api_base: String,
     pub api_key_env: String,
     pub api_key: String,
+    /// GCP project for Vertex (resolved at load time if env present; else runtime metadata)
+    pub vertex_project: String,
+    /// e.g. us-east5, europe-west1, global
+    pub vertex_location: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
     OpenAiCompatible,
     Anthropic,
+    /// Claude via Vertex AI Model Garden (GCP billing / IAM)
+    VertexAnthropic,
 }
 
 impl ProviderKind {
     fn parse(s: Option<&str>) -> Self {
         match s.map(|x| x.to_ascii_lowercase()).as_deref() {
             Some("anthropic") => Self::Anthropic,
+            Some("vertex_anthropic") | Some("vertex-anthropic") | Some("vertex") => {
+                Self::VertexAnthropic
+            }
             _ => Self::OpenAiCompatible,
         }
+    }
+
+    pub fn uses_gcp_adc(self) -> bool {
+        matches!(self, Self::VertexAnthropic)
     }
 }
 
@@ -69,9 +83,16 @@ struct RawModel {
 struct RawParams {
     provider: Option<String>,
     model: String,
-    api_base: String,
+    api_base: Option<String>,
     api_key_env: Option<String>,
     api_key: Option<String>,
+    /// Env var name holding GCP project id (default: GCP_PROJECT / GOOGLE_CLOUD_PROJECT)
+    vertex_project_env: Option<String>,
+    /// Env var name holding location (default: GCP_LOCATION)
+    vertex_location_env: Option<String>,
+    /// Literal project / location if not using env
+    vertex_project: Option<String>,
+    vertex_location: Option<String>,
 }
 
 impl AppConfig {
@@ -117,6 +138,7 @@ impl AppConfig {
         let mut model_names = Vec::new();
 
         for entry in raw.model_list {
+            let provider = ProviderKind::parse(entry.litellm_params.provider.as_deref());
             let key_env = entry
                 .litellm_params
                 .api_key_env
@@ -128,18 +150,30 @@ impl AppConfig {
                 entry.litellm_params.api_key.clone().unwrap_or_default()
             };
 
-            let api_base = entry.litellm_params.api_base.trim_end_matches('/').to_string();
-            if api_base.is_empty() {
+            let vertex_project = resolve_vertex_project(&entry.litellm_params);
+            let vertex_location = resolve_vertex_location(&entry.litellm_params);
+
+            let api_base = entry
+                .litellm_params
+                .api_base
+                .as_deref()
+                .unwrap_or("")
+                .trim_end_matches('/')
+                .to_string();
+
+            if api_base.is_empty() && !matches!(provider, ProviderKind::VertexAnthropic) {
                 bail!("model {} missing api_base", entry.model_name);
             }
 
             let route = ModelRoute {
                 model_name: entry.model_name.clone(),
-                provider: ProviderKind::parse(entry.litellm_params.provider.as_deref()),
+                provider,
                 upstream_model: entry.litellm_params.model,
                 api_base,
                 api_key_env: key_env,
                 api_key,
+                vertex_project,
+                vertex_location,
             };
             model_names.push(entry.model_name.clone());
             models.insert(entry.model_name, route);
@@ -164,6 +198,45 @@ impl AppConfig {
     }
 }
 
+fn resolve_vertex_project(p: &RawParams) -> String {
+    if let Some(lit) = &p.vertex_project {
+        if !lit.is_empty() {
+            return lit.clone();
+        }
+    }
+    if let Some(env_name) = &p.vertex_project_env {
+        if let Ok(v) = env::var(env_name) {
+            if !v.is_empty() {
+                return v;
+            }
+        }
+    }
+    env::var("GCP_PROJECT")
+        .or_else(|_| env::var("GOOGLE_CLOUD_PROJECT"))
+        .or_else(|_| env::var("GCLOUD_PROJECT"))
+        .or_else(|_| env::var("VERTEX_PROJECT"))
+        .unwrap_or_default()
+}
+
+fn resolve_vertex_location(p: &RawParams) -> String {
+    if let Some(lit) = &p.vertex_location {
+        if !lit.is_empty() {
+            return lit.clone();
+        }
+    }
+    if let Some(env_name) = &p.vertex_location_env {
+        if let Ok(v) = env::var(env_name) {
+            if !v.is_empty() {
+                return v;
+            }
+        }
+    }
+    env::var("GCP_LOCATION")
+        .or_else(|_| env::var("VERTEX_LOCATION"))
+        .or_else(|_| env::var("GOOGLE_CLOUD_REGION"))
+        .unwrap_or_else(|_| "us-east5".into())
+}
+
 pub fn port() -> u16 {
     env::var("PORT")
         .ok()
@@ -176,6 +249,7 @@ pub fn is_cloud_run() -> bool {
 }
 
 pub fn is_prod() -> bool {
-    is_cloud_run() || env::var("NODE_ENV").as_deref() == Ok("production")
+    is_cloud_run()
+        || env::var("NODE_ENV").as_deref() == Ok("production")
         || env::var("RUST_ENV").as_deref() == Ok("production")
 }
