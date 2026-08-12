@@ -56,14 +56,29 @@ model_list:
       api_base: https://api.openai.com/v1
       api_key_env: OPENAI_API_KEY
 
-  # ---- Gemini (Google AI Studio key, not Vertex) ----
+  # ---- Gemini (Google AI Studio OpenAI-compat; needs GEMINI_API_KEY) ----
+  # https://ai.google.dev/gemini-api/docs/models
+  - model_name: gemini-3.6-flash
+    litellm_params:
+      model: gemini-3.6-flash
+      api_base: https://generativelanguage.googleapis.com/v1beta/openai
+      api_key_env: GEMINI_API_KEY
+
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: gemini-3.5-flash
+      api_base: https://generativelanguage.googleapis.com/v1beta/openai
+      api_key_env: GEMINI_API_KEY
+
+  # Short alias → current recommended Flash
   - model_name: gemini-flash
     litellm_params:
-      model: gemini-2.0-flash
+      model: gemini-3.6-flash
       api_base: https://generativelanguage.googleapis.com/v1beta/openai
       api_key_env: GEMINI_API_KEY
 
   - model_name: default
     litellm_params:
-      provider: vertex_anthropic
-      model: claude-sonnet-4@20250514
+      model: gemini-3.6-flash
+      api_base: https://generativelanguage.googleapis.com/v1beta/openai
+      api_key_env: GEMINI_API_KEY
