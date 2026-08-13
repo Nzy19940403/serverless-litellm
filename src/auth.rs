@@ -93,22 +93,34 @@ impl AuthState {
             jwt_validation.validate_aud = false;
         }
 
+        // Where to ask North America "is this access token allowed?"
+        // This is only the NA base address (trust target), not a second auth system.
+        // Override with NA_VERIFY_URL if DNS/IP changes; default is production NA :8789.
+        const DEFAULT_NA_VERIFY: &str = "http://gcp.nzysxc.com:8789/v1/auth/verify";
         let na_verify_url = env::var("NA_VERIFY_URL")
             .ok()
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                // In Cloud Run / prod: always know where NA is (hard-coded default).
+                // Local dev: still default so behavior matches; set NA_VERIFY_URL="" to disable
+                // via DISABLE_NA_VERIFY=1.
+                if env::var("DISABLE_NA_VERIFY").ok().as_deref() == Some("1") {
+                    None
+                } else {
+                    Some(DEFAULT_NA_VERIFY.to_string())
+                }
+            });
         let na_secret = env::var("SERVERLESS_TO_NA_SECRET")
             .or_else(|_| env::var("NA_VERIFY_SECRET"))
             .ok()
             .filter(|s| !s.is_empty());
 
         // Do NOT bail here: Cloud Run health checks require the process to bind PORT.
-        // Missing auth → process starts; protected routes return 401/503.
         if master_key.is_empty() && jwt_key.is_none() && na_verify_url.is_none() {
             if is_prod() {
                 tracing::error!(
-                    "Auth not configured: set NA_VERIFY_URL (recommended) and/or \
-                     LITELLM_MASTER_KEY and/or JWT_PUBLIC_KEY — API will reject until set"
+                    "Auth not configured: no NA verify / master key / JWT — API will reject"
                 );
             } else {
                 tracing::warn!("Auth not configured (dev mode allows open access)");
@@ -117,8 +129,8 @@ impl AuthState {
             tracing::info!(
                 master = !master_key.is_empty(),
                 jwt = jwt_key.is_some(),
-                na = na_verify_url.is_some(),
-                "auth backends ready"
+                na_verify = na_verify_url.as_deref().unwrap_or("-"),
+                "auth ready (LLM trust path: client JWT → ask NA → Vertex)"
             );
         }
 
