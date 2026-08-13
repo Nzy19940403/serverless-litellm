@@ -55,16 +55,28 @@ model_list:
       api_base: https://generativelanguage.googleapis.com/v1beta/openai
       api_key_env: GEMINI_API_KEY
 
-  # ---- Claude on Vertex (needs Model Garden approval + often paid billing account) ----
+  # ---- Claude on Vertex (Model Garden + Cloud Run SA needs roles/aiplatform.user) ----
+  # Official global example:
+  #   .../publishers/anthropic/models/claude-sonnet-4-5@20250929:streamRawPredict
   - model_name: claude-sonnet
     litellm_params:
       provider: vertex_anthropic
-      model: claude-sonnet-4@20250514
+      model: claude-sonnet-4-5@20250929
+
+  - model_name: claude-sonnet-4.5
+    litellm_params:
+      provider: vertex_anthropic
+      model: claude-sonnet-4-5@20250929
+
+  - model_name: claude-sonnet-4-5
+    litellm_params:
+      provider: vertex_anthropic
+      model: claude-sonnet-4-5@20250929
 
   - model_name: claude-sonnet-direct
     litellm_params:
       provider: anthropic
-      model: claude-sonnet-4-20250514
+      model: claude-sonnet-4-5-20250929
       api_base: https://api.anthropic.com
       api_key_env: ANTHROPIC_API_KEY
 
