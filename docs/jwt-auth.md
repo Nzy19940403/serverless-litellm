@@ -1,8 +1,31 @@
-# 公钥 / 私钥（RS256 JWT）鉴权
+# 公钥 / 私钥（RS256 JWT）鉴权 + 北美放行（按 IP 缓存）
 
-适合：**Cloud Run 允许公开访问** + 本地 agent 方便调用 + **私钥不进 Git / 不上云**。
+适合：**Cloud Run 公开** + **东京 MFA 出票** + **北美只保留登录态/公钥**。
 
-## 架构
+## 推荐架构（你现在要的）
+
+```text
+[东京] MFA 登录 → 签发 access JWT（含 login_ip）→ 推公钥到北美
+[Agent]  base_url = Cloud Run，api_key = access_token
+[Cloud Run]
+  1. 看缓存：JWT 未过期 且 请求 IP == login_ip → 直接放行（不问北美）
+  2. 否则（首次 / IP 变了）→ POST 北美 /v1/auth/verify
+  3. 北美验签通过 → Cloud Run 调 Vertex
+[北美] 只做：存公钥 + /v1/auth/verify（不是主 LLM 路径）
+```
+
+### Cloud Run 环境变量
+
+| 变量 | 说明 |
+|------|------|
+| `NA_VERIFY_URL` | `http://gcp.nzysxc.com:8789/v1/auth/verify`（或内网） |
+| `SERVERLESS_TO_NA_SECRET` | 可选，与北美一致 |
+| `JWT_ISSUER` / `JWT_AUDIENCE` | 与东京一致（若本地也验签） |
+| `LITELLM_MASTER_KEY` | 可选应急 |
+
+**不必**每请求问北美；**IP 与登录时不一致**才再问。
+
+## 本地公钥模式（可选）
 
 ```text
 GitHub 构建镜像（无密钥）
@@ -15,7 +38,7 @@ Cloud Run 环境变量：
   base_url = https://xxx.run.app/v1
 ```
 
-也支持传统 **`LITELLM_MASTER_KEY`**（对称共享密钥），可与 JWT **同时开启**（任一通过即可）。
+也支持传统 **`LITELLM_MASTER_KEY`**（对称共享密钥），可与 JWT / NA **同时开启**（任一通过即可）。
 
 ## 1. 本机生成密钥对
 

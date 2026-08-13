@@ -34,7 +34,8 @@ async fn main() -> anyhow::Result<()> {
         models = ?config.model_names,
         master_key_set = auth.master_key_set(),
         jwt_rs256 = auth.jwt_enabled(),
-        "loaded config"
+        na_verify = auth.na_verify_enabled(),
+        "loaded config (NA verify: same login_ip caches until JWT exp; IP change re-asks NA)"
     );
 
     let state = AppState::new(config);

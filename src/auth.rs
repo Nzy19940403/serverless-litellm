@@ -4,30 +4,66 @@ use axum::middleware::Next;
 use axum::response::Response;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 
 use crate::config::is_prod;
 use crate::error::AppError;
 
-/// Runtime auth: shared master key and/or RS256 JWT public key.
-/// Secrets come from env / Secret Manager — never from git.
+/// Cached positive decision after NA verify (or local JWT when IP matches).
+#[derive(Clone, Debug)]
+struct SessionCache {
+    /// JWT exp (unix seconds)
+    exp: i64,
+    /// login_ip bound at Tokyo mint (from NA / JWT claim)
+    login_ip: String,
+    /// last successful local decision
+    #[allow(dead_code)]
+    cached_at: Instant,
+}
+
+/// Runtime auth:
+/// - optional master key
+/// - optional local RS256 public key
+/// - **NA remote verify** with **IP-sticky cache**:
+///   while JWT not expired and request IP == login_ip → do **not** re-ask NA;
+///   if request IP differs from login_ip → ask NA again.
 #[derive(Clone)]
 pub struct AuthState {
     master_key: String,
     jwt_key: Option<DecodingKey>,
     jwt_validation: Validation,
+    /// e.g. http://gcp.nzysxc.com:8789/v1/auth/verify
+    na_verify_url: Option<String>,
+    na_secret: Option<String>,
+    http: reqwest::Client,
+    /// token fingerprint → session
+    cache: Arc<RwLock<HashMap<String, SessionCache>>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct JwtClaims {
-    /// optional subject (e.g. agent name)
     #[allow(dead_code)]
     sub: Option<String>,
-    /// validated by jsonwebtoken when validate_exp is true
-    #[allow(dead_code)]
     exp: i64,
+    typ: Option<String>,
+    #[serde(default)]
+    login_ip: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NaVerifyResp {
+    active: bool,
+    #[serde(default)]
+    exp: Option<i64>,
+    #[serde(default)]
+    login_ip: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 impl AuthState {
@@ -35,7 +71,6 @@ impl AuthState {
         let jwt_key = load_jwt_public_key()?;
         let mut jwt_validation = Validation::new(Algorithm::RS256);
         jwt_validation.validate_exp = true;
-        // allow small clock skew
         jwt_validation.leeway = 60;
 
         if let Ok(iss) = env::var("JWT_ISSUER") {
@@ -48,21 +83,38 @@ impl AuthState {
                 jwt_validation.set_audience(&[aud]);
             }
         } else {
-            // do not require aud unless configured
             jwt_validation.validate_aud = false;
         }
 
-        if master_key.is_empty() && jwt_key.is_none() && is_prod() {
+        let na_verify_url = env::var("NA_VERIFY_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let na_secret = env::var("SERVERLESS_TO_NA_SECRET")
+            .or_else(|_| env::var("NA_VERIFY_SECRET"))
+            .ok()
+            .filter(|s| !s.is_empty());
+
+        if master_key.is_empty() && jwt_key.is_none() && na_verify_url.is_none() && is_prod() {
             anyhow::bail!(
-                "Auth not configured: set LITELLM_MASTER_KEY and/or JWT_PUBLIC_KEY \
-                 (or JWT_PUBLIC_KEY_FILE) on Cloud Run"
+                "Auth not configured: set NA_VERIFY_URL and/or LITELLM_MASTER_KEY \
+                 and/or JWT_PUBLIC_KEY on Cloud Run"
             );
         }
+
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(8))
+            .connect_timeout(Duration::from_secs(3))
+            .build()?;
 
         Ok(Self {
             master_key,
             jwt_key,
             jwt_validation,
+            na_verify_url,
+            na_secret,
+            http,
+            cache: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -74,15 +126,189 @@ impl AuthState {
         self.jwt_key.is_some()
     }
 
-    fn accept_token(&self, token: &str) -> bool {
+    pub fn na_verify_enabled(&self) -> bool {
+        self.na_verify_url.is_some()
+    }
+
+    fn token_fp(token: &str) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        token.hash(&mut h);
+        format!("{:016x}", h.finish())
+    }
+
+    /// Local RS256 only (no NA). Used when we still want master/JWT fallback.
+    fn accept_local(&self, token: &str) -> Option<JwtClaims> {
         if !self.master_key.is_empty() && token == self.master_key {
-            return true;
+            // synthetic "always ok" — not cached as JWT
+            return None;
         }
-        if let Some(key) = &self.jwt_key {
-            return decode::<JwtClaims>(token, key, &self.jwt_validation).is_ok();
+        let key = self.jwt_key.as_ref()?;
+        let data = decode::<JwtClaims>(token, key, &self.jwt_validation).ok()?;
+        if let Some(typ) = data.claims.typ.as_deref() {
+            if typ == "refresh" {
+                return None;
+            }
+        }
+        Some(data.claims)
+    }
+
+    fn is_master(&self, token: &str) -> bool {
+        !self.master_key.is_empty() && token == self.master_key
+    }
+
+    async fn cache_get_allow(&self, fp: &str, client_ip: &str) -> bool {
+        let now = chrono_now();
+        let guard = self.cache.read().await;
+        if let Some(e) = guard.get(fp) {
+            if e.exp > now + 5 && ips_equal(client_ip, &e.login_ip) {
+                return true;
+            }
         }
         false
     }
+
+    async fn cache_put(&self, fp: String, exp: i64, login_ip: String) {
+        let mut guard = self.cache.write().await;
+        // opportunistic prune
+        if guard.len() > 10_000 {
+            let now = chrono_now();
+            guard.retain(|_, v| v.exp > now);
+        }
+        guard.insert(
+            fp,
+            SessionCache {
+                exp,
+                login_ip,
+                cached_at: Instant::now(),
+            },
+        );
+    }
+
+    /// Returns true if allowed.
+    async fn authorize_token(&self, token: &str, client_ip: &str) -> Result<bool, AppError> {
+        if self.is_master(token) {
+            return Ok(true);
+        }
+
+        let fp = Self::token_fp(token);
+
+        // Fast path: JWT not expired (via cache) + same login IP → no NA call
+        if self.cache_get_allow(&fp, client_ip).await {
+            tracing::debug!(%client_ip, "auth cache hit (same login_ip, skip NA)");
+            return Ok(true);
+        }
+
+        // If we have a local public key and can verify JWT:
+        // same login_ip → allow without NA; different IP → must ask NA (if configured)
+        if let Some(claims) = self.accept_local(token) {
+            let lip = claims.login_ip.as_deref().unwrap_or("");
+            if lip.is_empty() || ips_equal(client_ip, lip) {
+                self.cache_put(fp, claims.exp, if lip.is_empty() { client_ip.to_string() } else { lip.to_string() })
+                    .await;
+                tracing::debug!(%client_ip, "local JWT ok, same/empty login_ip, skip NA");
+                return Ok(true);
+            }
+            // IP mismatch → fall through to NA if available
+            tracing::info!(
+                %client_ip,
+                login_ip = lip,
+                "JWT login_ip mismatch → ask NA"
+            );
+        }
+
+        // Ask NA: first use, cache miss, expired, or IP changed
+        if let Some(url) = &self.na_verify_url {
+            return self.ask_na(url, token, client_ip, fp).await;
+        }
+
+        // No NA and local JWT failed
+        Ok(false)
+    }
+
+    async fn ask_na(
+        &self,
+        url: &str,
+        token: &str,
+        client_ip: &str,
+        fp: String,
+    ) -> Result<bool, AppError> {
+        let mut req = self
+            .http
+            .post(url)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header("x-client-ip", client_ip);
+
+        if let Some(sec) = &self.na_secret {
+            req = req.header("x-serverless-secret", sec);
+        }
+
+        let res = req.send().await.map_err(|e| {
+            AppError::Unauthorized(format!("NA verify unreachable: {e}"))
+        })?;
+
+        let status = res.status();
+        let body: NaVerifyResp = res.json().await.map_err(|e| {
+            AppError::Unauthorized(format!("NA verify bad response: {e}"))
+        })?;
+
+        if !status.is_success() || !body.active {
+            let msg = body
+                .error
+                .unwrap_or_else(|| format!("NA denied (HTTP {status})"));
+            tracing::warn!(%msg, %client_ip, "NA verify denied");
+            // drop cache entry if any
+            self.cache.write().await.remove(&fp);
+            return Ok(false);
+        }
+
+        let exp = body.exp.unwrap_or_else(|| chrono_now() + 3600);
+        // Prefer JWT login_ip from NA; if empty, bind to current client IP for sticky cache
+        let login_ip = body
+            .login_ip
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| client_ip.to_string());
+
+        // Only sticky-cache when current IP matches login_ip.
+        // If IP differs but NA still allowed (non-strict), do NOT cache as same-IP fast path
+        // for the wrong IP — next request with yet another IP must re-ask.
+        // Cache under login_ip so only requests from login_ip skip NA.
+        self.cache_put(fp, exp, login_ip.clone()).await;
+
+        if !ips_equal(client_ip, &login_ip) && !login_ip.is_empty() {
+            tracing::info!(
+                %client_ip,
+                %login_ip,
+                "NA allowed despite IP mismatch (not sticky for this IP)"
+            );
+            // Allowed this once; subsequent same mismatched IP will ask NA again
+            // (cache only helps when client_ip == login_ip)
+        } else {
+            tracing::debug!(%client_ip, %login_ip, "NA verify ok, cached");
+        }
+
+        Ok(true)
+    }
+}
+
+fn chrono_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn ips_equal(a: &str, b: &str) -> bool {
+    normalize_ip(a) == normalize_ip(b)
+}
+
+fn normalize_ip(s: &str) -> String {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("::ffff:") {
+        return rest.to_string();
+    }
+    s.to_string()
 }
 
 fn load_jwt_public_key() -> Result<Option<DecodingKey>, anyhow::Error> {
@@ -98,7 +324,6 @@ fn load_jwt_public_key() -> Result<Option<DecodingKey>, anyhow::Error> {
         if raw.is_empty() {
             None
         } else {
-            // Cloud Run env often stores PEM with literal \n
             Some(raw.replace("\\n", "\n"))
         }
     } else {
@@ -116,7 +341,7 @@ fn load_jwt_public_key() -> Result<Option<DecodingKey>, anyhow::Error> {
 }
 
 /// Public: `/`, `/health`, `/healthz`, `/ui`
-/// Protected APIs: Bearer master key **or** RS256 JWT (signed offline with private key)
+/// Protected: master key | local JWT (same IP) | NA verify (first / IP change)
 pub async fn gateway_auth(
     axum::extract::State(auth): axum::extract::State<Arc<AuthState>>,
     req: Request,
@@ -129,11 +354,10 @@ pub async fn gateway_auth(
         return Ok(next.run(req).await);
     }
 
-    // Dev with no auth configured at all
-    if auth.master_key.is_empty() && auth.jwt_key.is_none() {
+    if auth.master_key.is_empty() && !auth.jwt_enabled() && !auth.na_verify_enabled() {
         if is_prod() {
             return Err(AppError::Internal(
-                "No LITELLM_MASTER_KEY or JWT_PUBLIC_KEY configured".into(),
+                "No NA_VERIFY_URL / LITELLM_MASTER_KEY / JWT_PUBLIC_KEY configured".into(),
             ));
         }
         return Ok(next.run(req).await);
@@ -141,17 +365,19 @@ pub async fn gateway_auth(
 
     let Some(token) = extract_token(&req) else {
         return Err(AppError::Unauthorized(
-            "Missing credentials. Use Authorization: Bearer <master_key|jwt> or x-api-key".into(),
+            "Missing credentials. Use Authorization: Bearer <jwt> or x-api-key".into(),
         ));
     };
 
-    if auth.accept_token(&token) {
-        return Ok(next.run(req).await);
-    }
+    let client_ip = client_ip_from_request(&req);
 
-    Err(AppError::Unauthorized(
-        "Invalid credentials (master key or JWT verification failed)".into(),
-    ))
+    match auth.authorize_token(&token, &client_ip).await {
+        Ok(true) => Ok(next.run(req).await),
+        Ok(false) => Err(AppError::Unauthorized(
+            "Not allowed (JWT/NA verify failed or IP not permitted)".into(),
+        )),
+        Err(e) => Err(e),
+    }
 }
 
 fn extract_token(req: &Request) -> Option<String> {
@@ -170,4 +396,29 @@ fn extract_token(req: &Request) -> Option<String> {
         .and_then(|v| v.to_str().ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+fn client_ip_from_request(req: &Request) -> String {
+    // Cloud Run / proxies: first X-Forwarded-For hop is original client
+    if let Some(xff) = req
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+    {
+        let first = xff.split(',').next().unwrap_or("").trim();
+        if !first.is_empty() {
+            return first.to_string();
+        }
+    }
+    if let Some(ip) = req
+        .headers()
+        .get("x-real-ip")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        return ip.to_string();
+    }
+    // Fallback: unknown — cache key will force more NA checks
+    "0.0.0.0".into()
 }
