@@ -12,3 +12,5 @@ Cargo.toml
 Cargo.lock
 *.md
 .gcloudignore
+archive
+target

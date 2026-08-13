@@ -7,3 +7,6 @@
 .DS_Store
 .idea
 .vscode
+
+# Rust archive local builds
+archive/rust-gateway/target/
