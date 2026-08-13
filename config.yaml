@@ -1,6 +1,5 @@
-# LiteLLM proxy (Python) — Cloud Run
-# Auth: custom_auth.py (Tokyo JWT → NA verify)
-# Vertex uses ADC + VERTEXAI_PROJECT / VERTEXAI_LOCATION env (set in Dockerfile)
+# Minimal LiteLLM config for Cloud Run boot reliability.
+# Vertex ADC: VERTEXAI_PROJECT / VERTEXAI_LOCATION (Dockerfile)
 
 model_list:
   - model_name: gemini-3.6-flash
@@ -18,22 +17,6 @@ model_list:
   - model_name: gemini-3.1-flash-lite
     litellm_params:
       model: vertex_ai/gemini-3.1-flash-lite
-
-  - model_name: gemini-3.1-flash-lite-preview
-    litellm_params:
-      model: vertex_ai/gemini-3.1-flash-lite-preview
-
-  - model_name: gemini-3.1-pro-preview
-    litellm_params:
-      model: vertex_ai/gemini-3.1-pro-preview
-
-  - model_name: gemini-3-flash-preview
-    litellm_params:
-      model: vertex_ai/gemini-3-flash-preview
-
-  - model_name: gemini-3-pro-preview
-    litellm_params:
-      model: vertex_ai/gemini-3-pro-preview
 
   - model_name: gemini-2.5-flash
     litellm_params:
@@ -61,20 +44,15 @@ model_list:
 
   - model_name: claude-sonnet
     litellm_params:
-      model: vertex_ai/claude-sonnet-4-5@20250929
+      model: "vertex_ai/claude-sonnet-4-5@20250929"
 
   - model_name: claude-sonnet-4.5
     litellm_params:
-      model: vertex_ai/claude-sonnet-4-5@20250929
+      model: "vertex_ai/claude-sonnet-4-5@20250929"
 
   - model_name: claude-sonnet-4-5
     litellm_params:
-      model: vertex_ai/claude-sonnet-4-5@20250929
-
-  - model_name: claude-sonnet-direct
-    litellm_params:
-      model: anthropic/claude-sonnet-4-5-20250929
-      api_key: os.environ/ANTHROPIC_API_KEY
+      model: "vertex_ai/claude-sonnet-4-5@20250929"
 
 litellm_settings:
   drop_params: true
@@ -82,5 +60,6 @@ litellm_settings:
   modify_params: true
 
 general_settings:
-  # Do not require master_key at startup (empty env used to crash some versions)
+  # Break-glass + custom Tokyo/NA auth (see custom_auth.py)
+  master_key: os.environ/LITELLM_MASTER_KEY
   custom_auth: custom_auth.user_api_key_auth
