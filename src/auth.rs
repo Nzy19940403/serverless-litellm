@@ -68,7 +68,14 @@ struct NaVerifyResp {
 
 impl AuthState {
     pub fn from_env(master_key: String) -> Result<Self, anyhow::Error> {
-        let jwt_key = load_jwt_public_key()?;
+        // Soft-fail invalid PEM so Cloud Run still binds PORT
+        let jwt_key = match load_jwt_public_key() {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::error!("JWT_PUBLIC_KEY load failed (ignored at startup): {e}");
+                None
+            }
+        };
         let mut jwt_validation = Validation::new(Algorithm::RS256);
         jwt_validation.validate_exp = true;
         jwt_validation.leeway = 60;
@@ -95,10 +102,23 @@ impl AuthState {
             .ok()
             .filter(|s| !s.is_empty());
 
-        if master_key.is_empty() && jwt_key.is_none() && na_verify_url.is_none() && is_prod() {
-            anyhow::bail!(
-                "Auth not configured: set NA_VERIFY_URL and/or LITELLM_MASTER_KEY \
-                 and/or JWT_PUBLIC_KEY on Cloud Run"
+        // Do NOT bail here: Cloud Run health checks require the process to bind PORT.
+        // Missing auth → process starts; protected routes return 401/503.
+        if master_key.is_empty() && jwt_key.is_none() && na_verify_url.is_none() {
+            if is_prod() {
+                tracing::error!(
+                    "Auth not configured: set NA_VERIFY_URL (recommended) and/or \
+                     LITELLM_MASTER_KEY and/or JWT_PUBLIC_KEY — API will reject until set"
+                );
+            } else {
+                tracing::warn!("Auth not configured (dev mode allows open access)");
+            }
+        } else {
+            tracing::info!(
+                master = !master_key.is_empty(),
+                jwt = jwt_key.is_some(),
+                na = na_verify_url.is_some(),
+                "auth backends ready"
             );
         }
 

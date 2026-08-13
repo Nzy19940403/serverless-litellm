@@ -35,11 +35,12 @@ WORKDIR /app
 COPY --from=builder /app/target/release/serverless-litellm /app/serverless-litellm
 COPY --from=builder /app/config.yaml /app/config.yaml
 
+# Cloud Run injects PORT (usually 8080). Default 8080 so listen matches if env is missing.
 ENV CONFIG_PATH=/app/config.yaml \
-    PORT=4000 \
+    PORT=8080 \
     RUST_LOG=serverless_litellm=info \
     RUST_BACKTRACE=1
 
-EXPOSE 4000
+EXPOSE 8080
 USER nonroot
 CMD ["/app/serverless-litellm"]
