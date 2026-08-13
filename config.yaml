@@ -1,116 +1,76 @@
-# Open-source LiteLLM proxy config (Python) for Cloud Run
-# Clients:
-#   OpenAI SDK  → /v1/chat/completions
-#   Anthropic / Claude agent → /v1/messages  (LiteLLM converts)
-# Auth: custom_auth.py → Tokyo JWT → NA /v1/auth/verify
-# Upstream Gemini/Claude: Vertex / Agent Platform via ADC (Cloud Run SA)
+# LiteLLM proxy (Python) — Cloud Run
+# Auth: custom_auth.py (Tokyo JWT → NA verify)
+# Vertex uses ADC + VERTEXAI_PROJECT / VERTEXAI_LOCATION env (set in Dockerfile)
 
 model_list:
-  # ---------- Gemini (Vertex / Agent Platform) ----------
   - model_name: gemini-3.6-flash
     litellm_params:
       model: vertex_ai/gemini-3.6-flash
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: gemini-3.5-flash
     litellm_params:
       model: vertex_ai/gemini-3.5-flash
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: gemini-3.5-flash-lite
     litellm_params:
       model: vertex_ai/gemini-3.5-flash-lite
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: gemini-3.1-flash-lite
     litellm_params:
       model: vertex_ai/gemini-3.1-flash-lite
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: gemini-3.1-flash-lite-preview
     litellm_params:
       model: vertex_ai/gemini-3.1-flash-lite-preview
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: gemini-3.1-pro-preview
     litellm_params:
       model: vertex_ai/gemini-3.1-pro-preview
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: gemini-3-flash-preview
     litellm_params:
       model: vertex_ai/gemini-3-flash-preview
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: gemini-3-pro-preview
     litellm_params:
       model: vertex_ai/gemini-3-pro-preview
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: gemini-2.5-flash
     litellm_params:
       model: vertex_ai/gemini-2.5-flash
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: gemini-2.5-flash-lite
     litellm_params:
       model: vertex_ai/gemini-2.5-flash-lite
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: gemini-2.5-pro
     litellm_params:
       model: vertex_ai/gemini-2.5-pro
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: gemini-flash
     litellm_params:
       model: vertex_ai/gemini-3.6-flash
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: gemini-flash-lite
     litellm_params:
       model: vertex_ai/gemini-3.5-flash-lite
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: default
     litellm_params:
       model: vertex_ai/gemini-3.6-flash
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
-  # ---------- Claude on Vertex (needs partner quota) ----------
   - model_name: claude-sonnet
     litellm_params:
       model: vertex_ai/claude-sonnet-4-5@20250929
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: claude-sonnet-4.5
     litellm_params:
       model: vertex_ai/claude-sonnet-4-5@20250929
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
   - model_name: claude-sonnet-4-5
     litellm_params:
       model: vertex_ai/claude-sonnet-4-5@20250929
-      vertex_project: os.environ/GCP_PROJECT
-      vertex_location: os.environ/GCP_LOCATION
 
-  # Direct Anthropic (needs ANTHROPIC_API_KEY on Cloud Run)
   - model_name: claude-sonnet-direct
     litellm_params:
       model: anthropic/claude-sonnet-4-5-20250929
@@ -119,11 +79,8 @@ model_list:
 litellm_settings:
   drop_params: true
   request_timeout: 300
-  # Helpful when clients send extra OpenAI/Anthropic fields
   modify_params: true
 
 general_settings:
-  # Tokyo access_token or optional master key — see custom_auth.py
+  # Do not require master_key at startup (empty env used to crash some versions)
   custom_auth: custom_auth.user_api_key_auth
-  # Optional break-glass (also checked inside custom_auth)
-  master_key: os.environ/LITELLM_MASTER_KEY
