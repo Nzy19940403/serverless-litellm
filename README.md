@@ -7,8 +7,8 @@
 - Upstream: **Vertex / Agent Platform** Gemini (and Claude if quota allows)
 - Auth: Tokyo MFA JWT → North America `/v1/auth/verify` (`custom_auth.py`)
 
-> Older **Rust** gateway code remains under `src/` for reference only.  
-> **Deploy uses Python LiteLLM** (`Dockerfile` + `config.yaml` + `custom_auth.py`).
+> **Deploy = Python LiteLLM only** (`Dockerfile` + `config.yaml` + `custom_auth.py`).  
+> Old Rust gateway moved to `archive/rust-gateway/` (not built, not deployed).
 
 ## Clients
 
