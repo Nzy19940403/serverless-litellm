@@ -1,5 +1,6 @@
 # LiteLLM-style model routing for Cloud Run
-# Vertex providers use GCP ADC (Cloud Run SA) — bills to your GCP free-trial credits.
+# Vertex / Agent Platform: Cloud Run SA + GCP_PROJECT / GCP_LOCATION=global
+# Client model name == model_name below; upstream ID == litellm_params.model
 
 general_settings:
   master_key_env: LITELLM_MASTER_KEY
@@ -10,10 +11,11 @@ litellm_settings:
 
 model_list:
   # =====================================================================
-  # Vertex Gemini — USE THESE to spend GCP free-trial / billing credits
-  # Env: GCP_PROJECT, GCP_LOCATION (recommend: global), LITELLM_MASTER_KEY
-  # Cloud Run SA needs roles/aiplatform.user ; enable aiplatform.googleapis.com
+  # Gemini on Agent Platform (Vertex generateContent) — GCP billing
+  # Display name in Model Garden → model_name you pass to the gateway
   # =====================================================================
+
+  # --- Gemini 3.x Flash / Lite (current) ---
   - model_name: gemini-3.6-flash
     litellm_params:
       provider: vertex_gemini
@@ -24,40 +26,78 @@ model_list:
       provider: vertex_gemini
       model: gemini-3.5-flash
 
+  - model_name: gemini-3.5-flash-lite
+    litellm_params:
+      provider: vertex_gemini
+      model: gemini-3.5-flash-lite
+
   - model_name: gemini-3.1-flash-lite
+    litellm_params:
+      provider: vertex_gemini
+      model: gemini-3.1-flash-lite
+
+  - model_name: gemini-3.1-flash-lite-preview
     litellm_params:
       provider: vertex_gemini
       model: gemini-3.1-flash-lite-preview
 
+  - model_name: gemini-3.1-pro-preview
+    litellm_params:
+      provider: vertex_gemini
+      model: gemini-3.1-pro-preview
+
+  - model_name: gemini-3-flash-preview
+    litellm_params:
+      provider: vertex_gemini
+      model: gemini-3-flash-preview
+
+  - model_name: gemini-3-pro-preview
+    litellm_params:
+      provider: vertex_gemini
+      model: gemini-3-pro-preview
+
+  # --- Gemini 2.5 ---
   - model_name: gemini-2.5-flash
     litellm_params:
       provider: vertex_gemini
       model: gemini-2.5-flash
 
-  # Short alias / default → Vertex 3.6 Flash (GCP billing)
+  - model_name: gemini-2.5-flash-lite
+    litellm_params:
+      provider: vertex_gemini
+      model: gemini-2.5-flash-lite
+
+  - model_name: gemini-2.5-pro
+    litellm_params:
+      provider: vertex_gemini
+      model: gemini-2.5-pro
+
+  # Aliases
   - model_name: gemini-flash
     litellm_params:
       provider: vertex_gemini
       model: gemini-3.6-flash
+
+  - model_name: gemini-flash-lite
+    litellm_params:
+      provider: vertex_gemini
+      model: gemini-3.5-flash-lite
 
   - model_name: default
     litellm_params:
       provider: vertex_gemini
       model: gemini-3.6-flash
 
-  # =====================================================================
-  # AI Studio Key path (optional) — may use free quota; NOT guaranteed GCP credits
-  # Needs GEMINI_API_KEY
-  # =====================================================================
+  # Optional: Google AI Studio key (not the same as GCP Agent Platform credits)
   - model_name: gemini-3.6-flash-studio
     litellm_params:
       model: gemini-3.6-flash
       api_base: https://generativelanguage.googleapis.com/v1beta/openai
       api_key_env: GEMINI_API_KEY
 
-  # ---- Claude on Vertex (Model Garden + Cloud Run SA needs roles/aiplatform.user) ----
-  # Official global example:
-  #   .../publishers/anthropic/models/claude-sonnet-4-5@20250929:streamRawPredict
+  # =====================================================================
+  # Claude on Agent Platform (rawPredict) — needs partner quota
+  # =====================================================================
   - model_name: claude-sonnet
     litellm_params:
       provider: vertex_anthropic
@@ -80,7 +120,7 @@ model_list:
       api_base: https://api.anthropic.com
       api_key_env: ANTHROPIC_API_KEY
 
-  # ---- Optional other providers ----
+  # Optional other providers (need their API keys on Cloud Run)
   - model_name: grok-4.5
     litellm_params:
       model: grok-4.5
