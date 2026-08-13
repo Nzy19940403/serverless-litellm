@@ -1,0 +1,24 @@
+# Rollback: working Rust OpenAI gateway (512Mi OK). Not used unless you rename to Dockerfile.
+FROM mirror.gcr.io/library/rust:1-bookworm AS builder
+WORKDIR /app
+COPY archive/rust-gateway/Cargo.toml archive/rust-gateway/Cargo.lock ./
+RUN mkdir src \
+    && echo 'fn main() {}' > src/main.rs \
+    && cargo build --release \
+    && rm -rf src \
+    && rm -f target/release/deps/serverless_litellm* \
+    && rm -rf target/release/.fingerprint/serverless-litellm*
+COPY archive/rust-gateway/src ./src
+COPY archive/rust-gateway/static ./static
+# minimal config for rust (if it still reads /app/config.yaml shapes differ — rust used its own)
+RUN cargo build --release && strip target/release/serverless-litellm || true
+
+FROM mirror.gcr.io/library/debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /app/target/release/serverless-litellm /app/serverless-litellm
+ENV PORT=8080 RUST_LOG=info
+EXPOSE 8080
+USER nobody
+CMD ["/app/serverless-litellm"]

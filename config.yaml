@@ -1,5 +1,6 @@
-# Minimal LiteLLM config for Cloud Run boot reliability.
-# Vertex ADC: VERTEXAI_PROJECT / VERTEXAI_LOCATION (Dockerfile)
+# Boot-first LiteLLM config (minimal).
+# Auth: master_key from env (default sk-litellm-change-me in Dockerfile).
+# Tokyo/NA custom_auth can be re-enabled after the service stays up.
 
 model_list:
   - model_name: gemini-3.6-flash
@@ -57,9 +58,9 @@ model_list:
 litellm_settings:
   drop_params: true
   request_timeout: 300
-  modify_params: true
 
 general_settings:
-  # Break-glass + custom Tokyo/NA auth (see custom_auth.py)
+  # Non-empty master key required for proxy auth at startup
   master_key: os.environ/LITELLM_MASTER_KEY
-  custom_auth: custom_auth.user_api_key_auth
+  # Re-enable after service is healthy:
+  # custom_auth: custom_auth.user_api_key_auth
