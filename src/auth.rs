@@ -413,6 +413,23 @@ pub async fn gateway_auth(
 }
 
 fn extract_token(req: &Request) -> Option<String> {
+    // Prefer x-api-key for *app* JWT when present.
+    // Cloud Run with "require authentication" puts Google identity token in
+    // Authorization; OpenAI SDK / agents can put Tokyo access_token in api_key
+    // which maps to Authorization — so for IAM-protected Run, use:
+    //   Authorization: Bearer <Google ID token>   (Cloud Run IAM)
+    //   x-api-key: <Tokyo access JWT>             (our auth → NA verify)
+    // When Run is public, only Authorization: Bearer <Tokyo JWT> is enough.
+    if let Some(k) = req
+        .headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        return Some(k);
+    }
+
     if let Some(auth) = req.headers().get(header::AUTHORIZATION) {
         if let Ok(s) = auth.to_str() {
             if let Some(rest) = s.strip_prefix("Bearer ") {
@@ -423,11 +440,7 @@ fn extract_token(req: &Request) -> Option<String> {
             }
         }
     }
-    req.headers()
-        .get("x-api-key")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    None
 }
 
 fn client_ip_from_request(req: &Request) -> String {
