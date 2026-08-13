@@ -1,46 +1,30 @@
-# Cloud Run / Cloud Build friendly multi-stage image.
-# Use mirror.gcr.io to avoid Docker Hub rate limits from GCP builders.
+# Official open-source LiteLLM proxy on Cloud Run (Python).
+# Supports OpenAI + Anthropic (/v1/messages) clients → Vertex Gemini / Claude, etc.
+FROM mirror.gcr.io/library/python:3.12-slim-bookworm
 
-# ---------- build ----------
-FROM mirror.gcr.io/library/rust:1-bookworm AS builder
 WORKDIR /app
-
-# Dependency layer cache: only recompile crates when Cargo.* changes
-COPY Cargo.toml Cargo.lock ./
-RUN mkdir src \
-    && echo 'fn main() { println!("build stub"); }' > src/main.rs \
-    && cargo build --release \
-    && rm -rf src \
-    && rm -f target/release/serverless-litellm \
-    && rm -f target/release/deps/serverless_litellm* \
-    && rm -rf target/release/.fingerprint/serverless-litellm*
-
-COPY src ./src
-COPY config.yaml ./config.yaml
-# include_str! embeds static/index.html at compile time
-COPY static ./static
-RUN cargo build --release \
-    && strip target/release/serverless-litellm || true
-
-# ---------- runtime ----------
-# debian-slim is more reliable on Cloud Run than distroless for first deploy/debug
-FROM mirror.gcr.io/library/debian:bookworm-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -r -u 65532 -s /usr/sbin/nologin nonroot
+    && pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir "litellm[proxy]" httpx
 
-WORKDIR /app
-COPY --from=builder /app/target/release/serverless-litellm /app/serverless-litellm
-COPY --from=builder /app/config.yaml /app/config.yaml
+COPY config.yaml /app/config.yaml
+COPY custom_auth.py /app/custom_auth.py
 
-# Cloud Run injects PORT (usually 8080). Default 8080 so listen matches if env is missing.
-ENV CONFIG_PATH=/app/config.yaml \
+ENV PYTHONPATH=/app \
     PORT=8080 \
-    RUST_LOG=serverless_litellm=info \
-    RUST_BACKTRACE=1
+    LITELLM_CONFIG=/app/config.yaml \
+    # Defaults for this project (override in Cloud Run if needed)
+    NA_VERIFY_URL=http://gcp.nzysxc.com:8789/v1/auth/verify \
+    GCP_PROJECT=project-8d01f8fd-0b09-42c6-974 \
+    GCP_LOCATION=global \
+    VERTEXAI_PROJECT=project-8d01f8fd-0b09-42c6-974 \
+    VERTEXAI_LOCATION=global
 
+# Cloud Run injects PORT
 EXPOSE 8080
-USER nonroot
-CMD ["/app/serverless-litellm"]
+
+# Single worker is fine for Cloud Run (scales with instances)
+CMD ["sh", "-c", "litellm --config /app/config.yaml --host 0.0.0.0 --port ${PORT:-8080} --num_workers 1"]

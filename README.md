@@ -1,154 +1,69 @@
-# serverless-litellm (Rust)
+# serverless-litellm
 
-OpenAI-compatible **multi-provider LLM gateway** for **Google Cloud Run**, in the style of [LiteLLM](https://github.com/BerriAI/litellm).
+**Open-source [LiteLLM](https://github.com/BerriAI/litellm) proxy** on **Google Cloud Run** (Python).
 
-> Official LiteLLM is Python. This repo is a **small Rust rewrite** focused on Cloud Run: low memory, small image, fast cold start.
+- OpenAI clients → `/v1/chat/completions`
+- **Anthropic / Claude agent** → `/v1/messages` (LiteLLM does protocol conversion)
+- Upstream: **Vertex / Agent Platform** Gemini (and Claude if quota allows)
+- Auth: Tokyo MFA JWT → North America `/v1/auth/verify` (`custom_auth.py`)
 
-## Why Rust here?
+> Older **Rust** gateway code remains under `src/` for reference only.  
+> **Deploy uses Python LiteLLM** (`Dockerfile` + `config.yaml` + `custom_auth.py`).
 
-| | Node | Rust (this repo) |
-|--|--|--|
-| Binary / image | larger + runtime | static-ish binary, distroless |
-| Idle memory on Cloud Run | higher | typically much lower |
-| Cold start | ok | usually better |
-| Code complexity | easier | a bit more, but still small |
+## Clients
 
-## API
+### OpenAI SDK / Cursor
 
-| Method | Path | Auth |
-|--------|------|------|
-| `GET` | `/health` | public |
-| `GET` | `/ui/` | public — **browser test console** |
-| `GET` | `/v1/models` | Bearer master key |
-| `POST` | `/v1/chat/completions` | Bearer master key |
+```text
+base_url = https://YOUR-CLOUD-RUN-URL/v1
+api_key  = <Tokyo access_token>
+model    = gemini-3.5-flash-lite   # or gemini-3.6-flash, …
+```
 
-Open `https://YOUR-SERVICE/ui/` → fill Master Key → load models → chat.
+### Claude agent / Anthropic SDK
 
-Same shape as OpenAI Chat Completions — point any OpenAI SDK at this service.
+LiteLLM accepts Anthropic-shaped traffic and can route to Gemini:
+
+```text
+ANTHROPIC_BASE_URL = https://YOUR-CLOUD-RUN-URL
+ANTHROPIC_API_KEY  = <Tokyo access_token>
+# model name as registered in config.yaml, e.g. gemini-3.5-flash
+```
+
+Exact env names depend on your Claude agent; point base URL at this service and use the Tokyo JWT as the API key.
+
+## Auth
+
+| Key | Meaning |
+|-----|---------|
+| Tokyo `access_token` | Normal path → `NA_VERIFY_URL` allow |
+| `LITELLM_MASTER_KEY` | Optional break-glass |
+
+Env (defaults baked in Dockerfile for this project):
+
+| Env | Default |
+|-----|---------|
+| `NA_VERIFY_URL` | `http://gcp.nzysxc.com:8789/v1/auth/verify` |
+| `GCP_PROJECT` / `VERTEXAI_PROJECT` | `project-8d01f8fd-0b09-42c6-974` |
+| `GCP_LOCATION` / `VERTEXAI_LOCATION` | `global` |
+
+Cloud Run **runtime SA** needs **Agent Platform User** (`roles/aiplatform.user`).
+
+## Deploy
+
+Git push → Cloud Build → Cloud Run (existing continuous deploy).
+
+Local:
 
 ```bash
-export BASE=https://YOUR-CLOUD-RUN-URL
-export KEY=sk-your-master-key
-
-curl -s "$BASE/v1/chat/completions" \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "grok-4.5",
-    "messages": [{"role":"user","content":"hi"}]
-  }'
+pip install -r requirements.txt
+export GCP_PROJECT=project-8d01f8fd-0b09-42c6-974
+export GCP_LOCATION=global
+export GOOGLE_APPLICATION_CREDENTIALS=...   # or gcloud ADC
+export NA_VERIFY_URL=http://gcp.nzysxc.com:8789/v1/auth/verify
+litellm --config config.yaml --port 8080
 ```
 
-OpenAI Python SDK:
+## Models
 
-```python
-from openai import OpenAI
-client = OpenAI(base_url="https://YOUR-URL/v1", api_key="sk-your-master-key")
-print(client.chat.completions.create(
-    model="grok-4.5",
-    messages=[{"role": "user", "content": "hi"}],
-))
-```
-
-## Config (`config.yaml`)
-
-LiteLLM-like `model_list`. Upstream keys come from env vars:
-
-```yaml
-model_list:
-  - model_name: grok-4.5          # what clients request
-    litellm_params:
-      model: grok-4.5             # upstream model id
-      api_base: https://api.x.ai/v1
-      api_key_env: XAI_API_KEY
-```
-
-Supported `provider` values:
-
-- omit / default → **OpenAI-compatible** (`/chat/completions`) — xAI, OpenAI, Gemini OpenAI-compat, …
-- `anthropic` → Anthropic Messages API (direct, needs `ANTHROPIC_API_KEY`)
-- `vertex_anthropic` → **Claude on Vertex AI** (GCP IAM / ADC; see [docs/vertex-claude.md](docs/vertex-claude.md))
-
-Default `claude-sonnet` uses **Vertex** (`claude-sonnet-4@20250514`).
-
-## Local run
-
-```bash
-# Rust 1.75+
-cp .env.example .env
-# edit .env — at least LITELLM_MASTER_KEY + one provider key
-
-export $(grep -v '^#' .env | xargs)
-cargo run --release
-# listens on :4000 (or $PORT)
-```
-
-## Deploy to Cloud Run
-
-### Console (Git continuous deploy)
-
-1. Source: this GitHub repo, branch `main`
-2. Build type: **Dockerfile** (not Buildpacks)
-3. Dockerfile path: `Dockerfile` (repo root)
-4. Container port: **4000**
-5. Set env vars: `LITELLM_MASTER_KEY`, `XAI_API_KEY`, …
-
-First Rust image build often takes **5–15 minutes** (compiling dependencies).  
-If the build fails in ~20s with **no logs**, fix IAM (below) and rebuild.
-
-### CLI
-
-```bash
-gcloud auth login
-gcloud config set project YOUR_PROJECT_ID
-
-export LITELLM_MASTER_KEY='sk-...'
-export XAI_API_KEY='xai-...'   # or OPENAI_API_KEY / etc.
-
-chmod +x scripts/deploy-cloud-run.sh
-./scripts/deploy-cloud-run.sh
-```
-
-Defaults: region `us-central1`, min instances `0` (serverless scale-to-zero), port `4000`, 512Mi RAM.
-
-**Production tip:** store keys in [Secret Manager](https://cloud.google.com/secret-manager) and mount with `--set-secrets` instead of plain env vars.
-
-### Build fails / “未找到日志”
-
-1. **Grant Cloud Build SA logging** (replace `PROJECT_NUMBER`):
-
-```bash
-PROJECT_NUMBER=$(gcloud projects describe "$(gcloud config get-value project)" --format='value(projectNumber)')
-gcloud projects add-iam-policy-binding "$(gcloud config get-value project)" \
-  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
-  --role="roles/logging.logWriter"
-gcloud projects add-iam-policy-binding "$(gcloud config get-value project)" \
-  --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
-  --role="roles/logging.logWriter"
-```
-
-2. Open **Cloud Build → History → that build → Build log** (not only Cloud Run page).
-
-3. Common causes we already mitigated in `Dockerfile`:
-   - Docker Hub rate limit → bases use `mirror.gcr.io/library/...`
-   - Missing `Cargo.lock` in build context → lockfile is copied explicitly
-
-## Project layout
-
-```
-config.yaml          # model routing
-src/main.rs          # axum server
-src/config.rs        # load YAML + env
-src/auth.rs          # master key middleware
-src/providers.rs     # upstream OpenAI-compat + Anthropic
-src/routes.rs        # HTTP handlers
-src/error.rs         # API errors
-Dockerfile           # multi-stage → distroless
-scripts/deploy-cloud-run.sh
-```
-
-## Notes
-
-- This is a **gateway**, not a full LiteLLM Admin UI / virtual-key DB.
-- Streaming is supported (`"stream": true`).
-- Health endpoints stay public for Cloud Run probes.
+See `config.yaml` (`gemini-3.5-flash-lite`, `gemini-3.6-flash`, Claude aliases, …).

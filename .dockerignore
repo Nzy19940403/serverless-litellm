@@ -1,8 +1,14 @@
 target
 .git
+.github
 .env
 .env.*
-*.md
-.github
-scripts
 **/*.rs.bk
+src
+static
+scripts
+docs
+Cargo.toml
+Cargo.lock
+*.md
+.gcloudignore
